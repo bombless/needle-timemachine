@@ -8,6 +8,7 @@ from .needle_adapter import NeedleAdapter, instrument_block_stack
 
 __all__ = [
     "NeedleAdapter",
+    "NeedleRuntime",
     "ReplayCursor",
     "SnapshotStore",
     "TensorInfo",
@@ -17,3 +18,10 @@ __all__ = [
     "instrument_block_stack",
     "trace",
 ]
+
+
+def __getattr__(name):
+    if name == "NeedleRuntime":
+        from .needle_runtime import NeedleRuntime
+        return NeedleRuntime
+    raise AttributeError(name)
