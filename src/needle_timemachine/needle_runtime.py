@@ -44,8 +44,22 @@ class NeedleRuntime:
         return self.adapter.record_hidden_states(tokens, hidden_states, emit_input=False)
 
     def logits(self, tokens: Any, **kwargs: Any) -> Any:
-        """Run the ordinary Needle forward path, recording model boundaries."""
-        return self.adapter(tokens, **kwargs)
+        """Run the ordinary Needle forward path through Flax's apply API."""
+        variables = {"params": self.params}
+        self.adapter.tracer.emit(
+            "model_input",
+            name="model.input",
+            tensors={"tokens": tokens},
+            metadata={"shape_only": True},
+        )
+        output = self.model.apply(variables, tokens, **kwargs)
+        tensors = (
+            {f"output_{i}": value for i, value in enumerate(output)}
+            if isinstance(output, tuple)
+            else {"logits": output}
+        )
+        self.adapter.tracer.emit("model_output", name="model.output", tensors=tensors)
+        return output
 
 
 def _checkpoint_error(path: str, exc: ValueError) -> ValueError:
