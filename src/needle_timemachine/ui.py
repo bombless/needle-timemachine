@@ -22,8 +22,8 @@ button,input{font:inherit}button{padding:8px 12px;border:1px solid #cbd2df;borde
 .timeline{position:relative;height:92px;overflow-x:auto;overflow-y:hidden;padding:18px 8px 0}.track{position:relative;height:3px;background:#ccd3df;top:30px;min-width:100%}
 .dot{position:absolute;top:23px;width:14px;height:14px;border-radius:50%;border:2px solid white;background:#697586;box-shadow:0 0 0 1px #aeb7c5;transform:translateX(-50%);cursor:pointer}.dot.layer{background:#3d63dd}.dot.current{background:#e05a33;transform:translate(-50%,0) scale(1.25)}
 #slider{width:100%}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.kv{display:grid;grid-template-columns:130px 1fr;gap:7px;font-family:ui-monospace,monospace;font-size:13px}.muted{color:#697586}pre{white-space:pre-wrap;overflow:auto;max-height:280px;background:#f7f8fa;padding:12px;border-radius:8px}
-.probability-table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}.probability-table th,.probability-table td{text-align:left;padding:9px 10px;border-bottom:1px solid #e5e9f0}.probability-table th:last-child,.probability-table td:last-child{text-align:right}.probability-bar{height:8px;border-radius:4px;background:#e5e9f0;overflow:hidden}.probability-fill{height:100%;background:#3d63dd}.probability-value{font-family:ui-monospace,monospace;min-width:90px;text-align:right}.probability-empty{color:#697586}
-@media(max-width:760px){.grid{grid-template-columns:1fr}}
+.probability-table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}.probability-table th,.probability-table td{text-align:left;padding:9px 10px;border-bottom:1px solid #e5e9f0}.probability-table th:nth-child(5),.probability-table td:nth-child(5){text-align:right}.probability-bar{height:8px;border-radius:4px;background:#e5e9f0;overflow:hidden}.probability-fill{height:100%;background:#3d63dd}.probability-value{font-family:ui-monospace,monospace;min-width:90px;text-align:right}.token-text{font-family:ui-monospace,monospace;white-space:pre-wrap}.token-hex{font-family:ui-monospace,monospace;word-break:break-word}.probability-empty{color:#697586}
+@media(max-width:760px){.grid{grid-template-columns:1fr}.probability-table{font-size:12px}.probability-table th,.probability-table td{padding:7px 5px}}
 </style></head>
 <body><main class="app">
 <div class="bar"><h1 style="margin:0">Needle Time Machine</h1><span id="summary" class="muted"></span></div>
@@ -36,16 +36,18 @@ let trace={events:[]}, pos=0, timer=null;
 const $=id=>document.getElementById(id);
 async function load(){trace=await (await fetch('/trace.json')).json();$('summary').textContent=`${trace.events.length} events · ${trace.checkpoint||'unknown checkpoint'}`;$('slider').max=Math.max(0,trace.events.length-1);drawDots();render(0)}
 function drawDots(){const t=$('track');trace.events.forEach((e,i)=>{const d=document.createElement('button');d.className='dot'+(e.op==='layer_output'?' layer':'');d.title=`${e.step}: ${e.op}`;d.style.left=(trace.events.length<2?50:i*100/(trace.events.length-1))+'%';d.onclick=()=>render(i);t.appendChild(d)})}
+function escapeHtml(value){return String(value??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;')}
 function renderProbabilities(event){
   const topK=event&&event.metadata&&Array.isArray(event.metadata.top_k)?event.metadata.top_k:null;
   if(!topK||!topK.length){$('probabilities').innerHTML='<p class="probability-empty">No probability output recorded for this event.</p>';$('probabilitySummary').textContent='';return}
   $('probabilitySummary').textContent=`top ${topK.length} · final sequence position`;
-  $('probabilities').innerHTML='<table class="probability-table"><thead><tr><th>Rank</th><th>Token ID</th><th>Token ID (hex)</th><th>Probability</th><th style="width:35%">Distribution</th></tr></thead><tbody>'+topK.map((item,index)=>{
+  $('probabilities').innerHTML='<table class="probability-table"><thead><tr><th>Rank</th><th>Token ID</th><th>Token 文本</th><th>Token bytes hex</th><th>概率</th><th style="width:28%">Distribution</th></tr></thead><tbody>'+topK.map((item,index)=>{
     const p=Number(item.probability)||0;
     const pct=(p*100).toFixed(4);
     const tokenId=Number(item.token_id);
-    const hex=Number.isInteger(tokenId)&&tokenId>=0?'0x'+tokenId.toString(16).toUpperCase():'—';
-    return `<tr><td>${index+1}</td><td><code>${item.token_id}</code></td><td><code>${hex}</code></td><td class="probability-value">${pct}%</td><td><div class="probability-bar"><div class="probability-fill" style="width:${Math.max(0,Math.min(100,p*100))}%"></div></div></td></tr>`;
+    const tokenText=escapeHtml(item.token_text||'');
+    const tokenHex=escapeHtml(item.token_bytes_hex||'');
+    return `<tr><td>${index+1}</td><td><code>${escapeHtml(item.token_id)}</code></td><td class="token-text">${tokenText||'∅'}</td><td class="token-hex"><code>${tokenHex||'∅'}</code></td><td class="probability-value">${pct}%</td><td><div class="probability-bar"><div class="probability-fill" style="width:${Math.max(0,Math.min(100,p*100))}%"></div></div></td></tr>`;
   }).join('')+'</tbody></table>';
 }
 function render(i){if(!trace.events.length)return;pos=Math.max(0,Math.min(i,trace.events.length-1));const e=trace.events[pos];$('slider').value=pos;$('title').textContent=`Step ${e.step} · ${e.op}`;const rows=[['layer',e.layer??'—'],['name',e.name??'—'],['phase',e.phase],['snapshot',e.snapshot_id??'—']];$('details').innerHTML=rows.map(([k,v])=>`<div class="muted">${k}</div><div>${v}</div>`).join('');$('tensors').textContent=JSON.stringify(e.tensors||{},null,2);$('metadata').textContent=JSON.stringify(e.metadata||{},null,2);renderProbabilities(e);document.querySelectorAll('.dot').forEach((d,j)=>d.classList.toggle('current',j===pos))}
