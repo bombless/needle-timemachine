@@ -40,7 +40,6 @@ def _find_logits(value: Any) -> np.ndarray:
             except TypeError:
                 continue
         if arrays:
-            # Prefer the usual [batch, sequence, vocab] logits tensor.
             for array in arrays:
                 if array.ndim >= 2:
                     return array
@@ -48,11 +47,10 @@ def _find_logits(value: Any) -> np.ndarray:
     raise TypeError(f"Could not find logits array in model output of type {type(value)!r}")
 
 
-def _top_k_probabilities(logits: Any, top_k: int) -> list[dict[str, Any]]:
+def _top_k_probabilities(logits: Any, top_k: int, tokenizer: Any) -> list[dict[str, Any]]:
     array = _find_logits(logits)
     if array.ndim < 2:
         raise ValueError(f"Expected logits with at least 2 dimensions, got {array.shape}")
-    # Display probabilities for the final sequence position of the first batch.
     final_logits = np.asarray(array[0, -1], dtype=np.float64)
     shifted = final_logits - np.max(final_logits)
     exp = np.exp(shifted)
@@ -60,10 +58,22 @@ def _top_k_probabilities(logits: Any, top_k: int) -> list[dict[str, Any]]:
     k = min(max(1, int(top_k)), probabilities.size)
     indices = np.argpartition(probabilities, -k)[-k:]
     indices = indices[np.argsort(probabilities[indices])[::-1]]
-    return [
-        {"token_id": int(index), "probability": float(probabilities[index])}
-        for index in indices
-    ]
+
+    results = []
+    for index in indices:
+        token_id = int(index)
+        try:
+            token_text = tokenizer.decode([token_id])
+        except Exception:
+            token_text = ""
+        token_bytes_hex = token_text.encode("utf-8").hex(" ")
+        results.append({
+            "token_id": token_id,
+            "token_text": token_text,
+            "token_bytes_hex": token_bytes_hex,
+            "probability": float(probabilities[index]),
+        })
+    return results
 
 
 def write_trace(path: Path, tracer: Tracer, *, checkpoint: str, prompt: str, config: Any) -> None:
@@ -124,7 +134,7 @@ def main(argv: list[str] | None = None) -> int:
 
     runtime.hidden_states(tokens)
     logits = runtime.logits(tokens)
-    top_k = _top_k_probabilities(logits, args.top_k)
+    top_k = _top_k_probabilities(logits, args.top_k, runtime.tokenizer)
     tracer.emit(
         "probability_output",
         name="model.output.probabilities",
