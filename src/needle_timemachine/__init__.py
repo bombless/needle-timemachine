@@ -4,13 +4,16 @@ from .events import TraceEvent, TensorInfo
 from .trace import Tracer, trace, get_tracer
 from .snapshot import SnapshotStore
 from .replay import ReplayCursor
+from .needle_adapter import NeedleAdapter, instrument_block_stack
 
 __all__ = [
+    "NeedleAdapter",
     "ReplayCursor",
     "SnapshotStore",
     "TensorInfo",
     "TraceEvent",
     "Tracer",
     "get_tracer",
+    "instrument_block_stack",
     "trace",
 ]
