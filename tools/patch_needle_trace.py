@@ -34,101 +34,31 @@ def patch(path: Path) -> None:
     backup = path.with_suffix(path.suffix + ".timemachine.bak")
     backup.write_text(text, encoding="utf-8")
 
-    text = replace_once(
-        text,
-        "from .quantize import fake_quant_act\n",
-        "from .quantize import fake_quant_act\n" + HEADER,
-        "hook header",
-    )
+    text = replace_once(text, "from .quantize import fake_quant_act\n", "from .quantize import fake_quant_act\n" + HEADER, "hook header")
+    text = replace_once(text, "def __call__(self, x, mask=None, rope=None, quant=False):\n        attn_dim = self.attn_dim or self.d_model\n", "def __call__(self, x, mask=None, rope=None, quant=False, trace_layer=None):\n        attn_dim = self.attn_dim or self.d_model\n", "attention signature")
+    text = replace_once(text, "        v = nn.Dense(kv_dim, dtype=self.dtype, use_bias=False, kernel_init=default_init(), name=\"v_proj\")(x)\n", "        v = nn.Dense(kv_dim, dtype=self.dtype, use_bias=False, kernel_init=default_init(), name=\"v_proj\")(x)\n        if trace_layer is not None:\n            _tm_emit(3, trace_layer, q)\n            _tm_emit(4, trace_layer, k)\n            _tm_emit(5, trace_layer, v)\n", "qkv hook")
+    text = replace_once(text, "            attn_weights = jnp.matmul(q, k.transpose(0, 1, 3, 2)) / scale\n\n            if mask is not None:\n", "            attn_weights = jnp.matmul(q, k.transpose(0, 1, 3, 2)) / scale\n            if trace_layer is not None:\n                _tm_emit(12, trace_layer, attn_weights)\n\n            if mask is not None:\n", "attention scores hook")
+    text = replace_once(text, "            attn_weights = nn.softmax(attn_weights, axis=-1)\n\n            out = jnp.matmul(attn_weights, v)\n", "            attn_weights = nn.softmax(attn_weights, axis=-1)\n            if trace_layer is not None:\n                _tm_emit(13, trace_layer, attn_weights)\n\n            out = jnp.matmul(attn_weights, v)\n", "softmax hook")
+    text = replace_once(text, "            out = out.reshape(B, -1, attn_dim)\n        else:\n", "            out = out.reshape(B, -1, attn_dim)\n            if trace_layer is not None:\n                _tm_emit(6, trace_layer, out)\n        else:\n", "flash attention hook")
+    text = replace_once(text, "            out = out.transpose(0, 2, 1, 3).reshape(B, -1, attn_dim)\n\n        out = out * nn.sigmoid(\n", "            out = out.transpose(0, 2, 1, 3).reshape(B, -1, attn_dim)\n            if trace_layer is not None:\n                _tm_emit(6, trace_layer, out)\n\n        out = out * nn.sigmoid(\n", "non-flash attention hook")
+    text = replace_once(text, "        return nn.Dense(self.d_model, dtype=self.dtype, use_bias=False, kernel_init=residual_init(self.num_layers), name=\"out_proj\")(out)\n", "        projected = nn.Dense(self.d_model, dtype=self.dtype, use_bias=False, kernel_init=residual_init(self.num_layers), name=\"out_proj\")(out)\n        if trace_layer is not None:\n            _tm_emit(7, trace_layer, projected)\n        return projected\n", "attention projection hook")
 
-    text = replace_once(
-        text,
-        "def __call__(self, x, mask=None, rope=None, quant=False):\n        attn_dim = self.attn_dim or self.d_model\n",
-        "def __call__(self, x, mask=None, rope=None, quant=False, trace_layer=None):\n        attn_dim = self.attn_dim or self.d_model\n",
-        "attention signature",
-    )
-    text = replace_once(
-        text,
-        "        v = nn.Dense(kv_dim, dtype=self.dtype, use_bias=False, kernel_init=default_init(), name=\"v_proj\")(x)\n",
-        "        v = nn.Dense(kv_dim, dtype=self.dtype, use_bias=False, kernel_init=default_init(), name=\"v_proj\")(x)\n        if trace_layer is not None:\n            _tm_emit(3, trace_layer, q)\n            _tm_emit(4, trace_layer, k)\n            _tm_emit(5, trace_layer, v)\n",
-        "qkv hook",
-    )
-    text = replace_once(
-        text,
-        "            out = out.reshape(B, -1, attn_dim)\n        else:\n",
-        "            out = out.reshape(B, -1, attn_dim)\n            if trace_layer is not None:\n                _tm_emit(6, trace_layer, out)\n        else:\n",
-        "flash attention hook",
-    )
-    text = replace_once(
-        text,
-        "            out = out.transpose(0, 2, 1, 3).reshape(B, -1, attn_dim)\n\n        out = out * nn.sigmoid(\n",
-        "            out = out.transpose(0, 2, 1, 3).reshape(B, -1, attn_dim)\n            if trace_layer is not None:\n                _tm_emit(6, trace_layer, out)\n\n        out = out * nn.sigmoid(\n",
-        "non-flash attention hook",
-    )
-    text = replace_once(
-        text,
-        "        return nn.Dense(self.d_model, dtype=self.dtype, use_bias=False, kernel_init=residual_init(self.num_layers), name=\"out_proj\")(out)\n",
-        "        projected = nn.Dense(self.d_model, dtype=self.dtype, use_bias=False, kernel_init=residual_init(self.num_layers), name=\"out_proj\")(out)\n        if trace_layer is not None:\n            _tm_emit(7, trace_layer, projected)\n        return projected\n",
-        "attention projection hook",
-    )
+    text = replace_once(text, "    def __call__(self, x, mask=None, rope=None, quant=False, engram_kv=None, site_flags=None):\n", "    def __call__(self, x, mask=None, rope=None, quant=False, engram_kv=None, site_flags=None, trace_layer=None):\n", "block signature")
+    text = replace_once(text, "        skip = x\n        x = ZCRMSNorm(dtype=self.dtype)(x)\n", "        skip = x\n        if trace_layer is not None:\n            _tm_emit(1, trace_layer, x)\n        x = ZCRMSNorm(dtype=self.dtype)(x)\n        if trace_layer is not None:\n            _tm_emit(2, trace_layer, x)\n", "block input norm hook")
+    text = replace_once(text, "                               name=\"self_attn\")(x, mask=mask, rope=rope, quant=quant)\n", "                               name=\"self_attn\")(x, mask=mask, rope=rope, quant=quant, trace_layer=trace_layer)\n", "block attention call")
+    text = replace_once(text, "        x = skip + self._gate(\"attn_gate\") * x\n\n        skip = x\n", "        x = skip + self._gate(\"attn_gate\") * x\n        if trace_layer is not None:\n            _tm_emit(8, trace_layer, x)\n\n        skip = x\n", "attention residual hook")
+    text = replace_once(text, "        x = ZCRMSNorm(dtype=self.dtype, name=\"pre_hada_norm\")(x)\n        x = HadamardMLP(self.d_model, self.dtype, name=\"hadamard_mlp\")(x)\n        return skip + x\n", "        x = ZCRMSNorm(dtype=self.dtype, name=\"pre_hada_norm\")(x)\n        if trace_layer is not None:\n            _tm_emit(9, trace_layer, x)\n        x = HadamardMLP(self.d_model, self.dtype, name=\"hadamard_mlp\")(x)\n        if trace_layer is not None:\n            _tm_emit(10, trace_layer, x)\n        result = skip + x\n        if trace_layer is not None:\n            _tm_emit(11, trace_layer, result)\n        return result\n", "mlp hooks")
 
-    text = replace_once(
-        text,
-        "    def __call__(self, x, mask=None, rope=None, quant=False, engram_kv=None, site_flags=None):\n",
-        "    def __call__(self, x, mask=None, rope=None, quant=False, engram_kv=None, site_flags=None, trace_layer=None):\n",
-        "block signature",
-    )
-    text = replace_once(
-        text,
-        "        skip = x\n        x = ZCRMSNorm(dtype=self.dtype)(x)\n",
-        "        skip = x\n        if trace_layer is not None:\n            _tm_emit(1, trace_layer, x)\n        x = ZCRMSNorm(dtype=self.dtype)(x)\n        if trace_layer is not None:\n            _tm_emit(2, trace_layer, x)\n",
-        "block input norm hook",
-    )
-    text = replace_once(
-        text,
-        "                               name=\"self_attn\")(x, mask=mask, rope=rope, quant=quant)\n",
-        "                               name=\"self_attn\")(x, mask=mask, rope=rope, quant=quant, trace_layer=trace_layer)\n",
-        "block attention call",
-    )
-    text = replace_once(
-        text,
-        "        x = skip + self._gate(\"attn_gate\") * x\n\n        skip = x\n",
-        "        x = skip + self._gate(\"attn_gate\") * x\n        if trace_layer is not None:\n            _tm_emit(8, trace_layer, x)\n\n        skip = x\n",
-        "attention residual hook",
-    )
-    text = replace_once(
-        text,
-        "        x = ZCRMSNorm(dtype=self.dtype, name=\"pre_hada_norm\")(x)\n        x = HadamardMLP(self.d_model, self.dtype, name=\"hadamard_mlp\")(x)\n        return skip + x\n",
-        "        x = ZCRMSNorm(dtype=self.dtype, name=\"pre_hada_norm\")(x)\n        if trace_layer is not None:\n            _tm_emit(9, trace_layer, x)\n        x = HadamardMLP(self.d_model, self.dtype, name=\"hadamard_mlp\")(x)\n        if trace_layer is not None:\n            _tm_emit(10, trace_layer, x)\n        result = skip + x\n        if trace_layer is not None:\n            _tm_emit(11, trace_layer, result)\n        return result\n",
-        "mlp hooks",
-    )
+    text = replace_once(text, "    def __call__(self, x):\n        n = 1 << (self.d_model - 1).bit_length()\n", "    def __call__(self, x, trace_layer=None):\n        n = 1 << (self.d_model - 1).bit_length()\n", "mlp signature")
+    text = replace_once(text, "        z = (d1 * z) @ H\n        z = nn.silu(d2 * z) @ H\n", "        z = (d1 * z) @ H\n        if trace_layer is not None:\n            _tm_emit(14, trace_layer, z)\n        z = nn.silu(d2 * z)\n        if trace_layer is not None:\n            _tm_emit(15, trace_layer, z)\n        z = z @ H\n", "mlp stages")
+    # The previous replacement needs the original return expression adjusted.
+    text = replace_once(text, "        return (d3 * z)[..., : self.d_model]\n", "        z = d3 * z\n        if trace_layer is not None:\n            _tm_emit(16, trace_layer, z)\n        return z[..., : self.d_model]\n", "mlp return")
+    text = replace_once(text, "        x = HadamardMLP(self.d_model, self.dtype, name=\"hadamard_mlp\")(x)\n", "        x = HadamardMLP(self.d_model, self.dtype, name=\"hadamard_mlp\")(x, trace_layer=trace_layer)\n", "mlp call")
 
-    text = replace_once(
-        text,
-        "        site_flags, hc = xs\n",
-        "        site_flags, layer_id, hc = xs\n",
-        "scan xs",
-    )
-    text = replace_once(
-        text,
-        "                  engram_kv=engram_kv, site_flags=site_flags) - u\n",
-        "                  engram_kv=engram_kv, site_flags=site_flags, trace_layer=layer_id) - u\n",
-        "scan block call",
-    )
-    text = replace_once(
-        text,
-        "        ScanBlock = nn.scan(\n",
-        "        layer_ids = jnp.arange(L, dtype=jnp.int32)\n\n        ScanBlock = nn.scan(\n",
-        "layer ids",
-    )
-    # The first in_axes entry already scans the whole ``xs`` pytree. Adding
-    # layer_ids inside that pytree therefore preserves the original scan ABI.
-    text = replace_once(
-        text,
-        "        )(x, (site_flags, hc), mask, rope, quant, engram_kv)\n",
-        "        )(x, (site_flags, layer_ids, hc), mask, rope, quant, engram_kv)\n",
-        "scan call",
-    )
+    text = replace_once(text, "        site_flags, hc = xs\n", "        site_flags, layer_id, hc = xs\n", "scan xs")
+    text = replace_once(text, "                  engram_kv=engram_kv, site_flags=site_flags) - u\n", "                  engram_kv=engram_kv, site_flags=site_flags, trace_layer=layer_id) - u\n", "scan block call")
+    text = replace_once(text, "        ScanBlock = nn.scan(\n", "        layer_ids = jnp.arange(L, dtype=jnp.int32)\n\n        ScanBlock = nn.scan(\n", "layer ids")
+    text = replace_once(text, "        )(x, (site_flags, hc), mask, rope, quant, engram_kv)\n", "        )(x, (site_flags, layer_ids, hc), mask, rope, quant, engram_kv)\n", "scan call")
 
     path.write_text(text, encoding="utf-8")
     print("patched:", path)
