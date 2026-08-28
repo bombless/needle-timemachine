@@ -9,7 +9,7 @@ runtime values even when Needle is inside ``jit``/``scan``/``remat``.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import Any, Callable, Iterator, Optional
+from typing import Any, Iterator
 
 from .trace import Tracer
 
@@ -24,8 +24,13 @@ OP_NAMES = {
     7: "attention.projected",
     8: "residual.attention",
     9: "mlp.input",
-    10: "mlp.output",
+    10: "mlp.activation",
     11: "layer.output",
+    12: "attention.scores",
+    13: "attention.softmax",
+    14: "mlp.hadamard1",
+    15: "mlp.silu",
+    16: "mlp.hadamard2",
 }
 
 
