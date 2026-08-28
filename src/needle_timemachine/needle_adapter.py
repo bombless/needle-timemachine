@@ -1,24 +1,34 @@
 """Adapter for tracing the upstream Needle Flax model.
 
-The first useful integration point is Needle's public ``hidden_states`` API.
-Needle already exposes the residual stream after every scanned Transformer
-block, so we can obtain a real per-layer timeline without rewriting Flax's
-``nn.scan`` implementation.
+The layer-level integration uses Needle's public ``hidden_states`` API. The
+upstream implementation already returns the residual stream after every
+Transformer block, so this gives us a faithful layer timeline without
+rewriting or monkey-patching Flax's ``nn.scan``.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from .trace import Tracer
 
+TraceLevel = Literal["none", "layer"]
+
 
 class NeedleAdapter:
-    """Trace high-level and layer-level Needle execution."""
+    """Trace high-level and layer-level Needle execution.
 
-    def __init__(self, model: Any, tracer: Tracer):
+    ``trace_level="layer"`` is the first real integration mode. It records the
+    embedding output and every Transformer block output. ``trace_level="none"``
+    only records the model boundary events and is useful for cheap baselines.
+    """
+
+    def __init__(self, model: Any, tracer: Tracer, *, trace_level: TraceLevel = "layer"):
+        if trace_level not in ("none", "layer"):
+            raise ValueError("trace_level must be 'none' or 'layer'")
         self.model = model
         self.tracer = tracer
+        self.trace_level = trace_level
 
     def __call__(self, tokens: Any, **kwargs: Any) -> Any:
         self.tracer.emit(
@@ -34,30 +44,29 @@ class NeedleAdapter:
         return output
 
     def hidden_states(self, tokens: Any, **kwargs: Any) -> Any:
-        """Run Needle's real hidden-state path and emit one event per layer.
-
-        The upstream implementation returns ``[B, T, L, C]`` where state 0 is
-        the embedding output and each following state is the output of one
-        Transformer block. We therefore get a real per-layer timeline without
-        replacing or monkey-patching Flax's ``nn.scan`` module.
-        """
+        """Run Needle's real hidden-state path and optionally emit its timeline."""
         self.tracer.emit(
             "model_input", name="model.hidden_states.input",
             tensors={"tokens": tokens}, metadata={"shape_only": True},
         )
 
         cells = self.model.hidden_states(tokens, **kwargs)
-        if not hasattr(cells, "shape") or len(cells.shape) != 4:
+        if self.trace_level == "none":
             self.tracer.emit(
                 "hidden_states_output", name="model.hidden_states.output",
-                tensors={"hidden": cells},
-                metadata={"layer_trace": False},
+                tensors={"hidden": cells}, metadata={"layer_trace": False},
             )
             return cells
 
+        if not hasattr(cells, "shape") or len(cells.shape) != 4:
+            raise ValueError(
+                "Needle hidden_states must return [batch, sequence, states, hidden]; "
+                f"got shape={getattr(cells, 'shape', None)!r}"
+            )
+
         num_states = int(cells.shape[2])
         self.tracer.emit(
-            "embedding_output", layer=0, name="embedding.output",
+            "embedding_output", layer=None, name="embedding.output",
             tensors={"hidden": cells[:, :, 0, :]},
             metadata={"state_index": 0, "layer_type": "embedding"},
         )
@@ -80,8 +89,9 @@ class NeedleAdapter:
 def instrument_block_stack(stack: Any, tracer: Tracer) -> Any:
     """Return a callable wrapper around a Stack boundary.
 
-    The preferred layer-level path is :meth:`NeedleAdapter.hidden_states`,
-    because it preserves the upstream ``nn.scan`` execution exactly.
+    This remains a non-invasive escape hatch for experiments. The preferred
+    layer-level path is :meth:`NeedleAdapter.hidden_states`, which preserves the
+    upstream ``nn.scan`` execution exactly.
     """
     original = stack
 
