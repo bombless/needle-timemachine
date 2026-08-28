@@ -46,7 +46,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--needle-source", required=True, help="Local cactus-compute/needle checkout")
     parser.add_argument("--prompt", required=True, help="Prompt to tokenize")
     parser.add_argument("--output", default="traces/run.json", help="Output trace JSON path")
-    parser.add_argument("--trace-level", choices=("none", "layer"), default="layer")
+    parser.add_argument(
+        "--trace-level",
+        choices=("none", "layer", "op"),
+        default="layer",
+        help="layer records hidden states; op records runtime attention/MLP values",
+    )
     parser.add_argument("--serve", action="store_true", help="Serve the trace in the local timeline UI")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
@@ -85,7 +90,9 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     layer_events = [e for e in tracer.events if e.op == "layer_output"]
+    runtime_events = [e for e in tracer.events if e.metadata.get("runtime")]
     print(f"layers:     {len(layer_events)}")
+    print(f"runtime:    {len(runtime_events)}")
     print(f"events:     {len(tracer.events)}")
     print(f"saved:      {args.output}")
 
