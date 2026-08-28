@@ -6,15 +6,15 @@ from typing import Any, Literal
 
 from .trace import Tracer
 
-TraceLevel = Literal["none", "layer"]
+TraceLevel = Literal["none", "layer", "op"]
 
 
 class NeedleAdapter:
-    """Trace Needle's model boundary and per-layer hidden states."""
+    """Trace Needle's model boundary, layers, or runtime operations."""
 
     def __init__(self, model: Any, tracer: Tracer, *, trace_level: TraceLevel = "layer"):
-        if trace_level not in ("none", "layer"):
-            raise ValueError("trace_level must be 'none' or 'layer'")
+        if trace_level not in ("none", "layer", "op"):
+            raise ValueError("trace_level must be 'none', 'layer', or 'op'")
         self.model = model
         self.tracer = tracer
         self.trace_level = trace_level
@@ -46,9 +46,10 @@ class NeedleAdapter:
             raise ValueError("Needle hidden_states must return [batch, sequence, states, hidden]; got shape=%r" % (getattr(cells, "shape", None),))
         num_states = int(cells.shape[2])
         self.tracer.emit("embedding_output", layer=None, name="embedding.output", tensors={"hidden": cells[:, :, 0, :]}, metadata={"state_index": 0, "layer_type": "embedding"})
-        for state_index in range(1, num_states):
-            layer = state_index - 1
-            self.tracer.emit("layer_output", layer=layer, name=f"layer.{layer}.output", tensors={"hidden": cells[:, :, state_index, :]}, metadata={"state_index": state_index, "layer_type": "transformer"})
+        if self.trace_level == "layer":
+            for state_index in range(1, num_states):
+                layer = state_index - 1
+                self.tracer.emit("layer_output", layer=layer, name=f"layer.{layer}.output", tensors={"hidden": cells[:, :, state_index, :]}, metadata={"state_index": state_index, "layer_type": "transformer"})
         self.tracer.emit("hidden_states_output", name="model.hidden_states.output", tensors={"hidden": cells}, metadata={"layer_count": max(0, num_states - 1)})
         return cells
 
