@@ -40,10 +40,12 @@ function renderProbabilities(event){
   const topK=event&&event.metadata&&Array.isArray(event.metadata.top_k)?event.metadata.top_k:null;
   if(!topK||!topK.length){$('probabilities').innerHTML='<p class="probability-empty">No probability output recorded for this event.</p>';$('probabilitySummary').textContent='';return}
   $('probabilitySummary').textContent=`top ${topK.length} · final sequence position`;
-  $('probabilities').innerHTML='<table class="probability-table"><thead><tr><th>Rank</th><th>Token ID</th><th>Probability</th><th style="width:45%">Distribution</th></tr></thead><tbody>'+topK.map((item,index)=>{
+  $('probabilities').innerHTML='<table class="probability-table"><thead><tr><th>Rank</th><th>Token ID</th><th>Token ID (hex)</th><th>Probability</th><th style="width:35%">Distribution</th></tr></thead><tbody>'+topK.map((item,index)=>{
     const p=Number(item.probability)||0;
     const pct=(p*100).toFixed(4);
-    return `<tr><td>${index+1}</td><td><code>${item.token_id}</code></td><td class="probability-value">${pct}%</td><td><div class="probability-bar"><div class="probability-fill" style="width:${Math.max(0,Math.min(100,p*100))}%"></div></div></td></tr>`;
+    const tokenId=Number(item.token_id);
+    const hex=Number.isInteger(tokenId)&&tokenId>=0?'0x'+tokenId.toString(16).toUpperCase():'—';
+    return `<tr><td>${index+1}</td><td><code>${item.token_id}</code></td><td><code>${hex}</code></td><td class="probability-value">${pct}%</td><td><div class="probability-bar"><div class="probability-fill" style="width:${Math.max(0,Math.min(100,p*100))}%"></div></div></td></tr>`;
   }).join('')+'</tbody></table>';
 }
 function render(i){if(!trace.events.length)return;pos=Math.max(0,Math.min(i,trace.events.length-1));const e=trace.events[pos];$('slider').value=pos;$('title').textContent=`Step ${e.step} · ${e.op}`;const rows=[['layer',e.layer??'—'],['name',e.name??'—'],['phase',e.phase],['snapshot',e.snapshot_id??'—']];$('details').innerHTML=rows.map(([k,v])=>`<div class="muted">${k}</div><div>${v}</div>`).join('');$('tensors').textContent=JSON.stringify(e.tensors||{},null,2);$('metadata').textContent=JSON.stringify(e.metadata||{},null,2);renderProbabilities(e);document.querySelectorAll('.dot').forEach((d,j)=>d.classList.toggle('current',j===pos))}
