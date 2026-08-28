@@ -5,6 +5,7 @@ from .trace import Tracer, trace, get_tracer
 from .snapshot import SnapshotStore
 from .replay import ReplayCursor
 from .needle_adapter import NeedleAdapter, instrument_block_stack
+from .ui import serve
 
 __all__ = [
     "NeedleAdapter",
@@ -16,6 +17,7 @@ __all__ = [
     "Tracer",
     "get_tracer",
     "instrument_block_stack",
+    "serve",
     "trace",
 ]
 
