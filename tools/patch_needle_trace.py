@@ -121,12 +121,8 @@ def patch(path: Path) -> None:
         "        layer_ids = jnp.arange(L, dtype=jnp.int32)\n\n        ScanBlock = nn.scan(\n",
         "layer ids",
     )
-    text = replace_once(
-        text,
-        "            in_axes=(0, nn.broadcast, nn.broadcast, nn.broadcast, nn.broadcast),\n",
-        "            in_axes=(0, 0, nn.broadcast, nn.broadcast, nn.broadcast),\n",
-        "scan axes",
-    )
+    # The first in_axes entry already scans the whole ``xs`` pytree. Adding
+    # layer_ids inside that pytree therefore preserves the original scan ABI.
     text = replace_once(
         text,
         "        )(x, (site_flags, hc), mask, rope, quant, engram_kv)\n",
