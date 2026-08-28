@@ -22,6 +22,7 @@ button,input{font:inherit}button{padding:8px 12px;border:1px solid #cbd2df;borde
 .timeline{position:relative;height:92px;overflow-x:auto;overflow-y:hidden;padding:18px 8px 0}.track{position:relative;height:3px;background:#ccd3df;top:30px;min-width:100%}
 .dot{position:absolute;top:23px;width:14px;height:14px;border-radius:50%;border:2px solid white;background:#697586;box-shadow:0 0 0 1px #aeb7c5;transform:translateX(-50%);cursor:pointer}.dot.layer{background:#3d63dd}.dot.current{background:#e05a33;transform:translate(-50%,0) scale(1.25)}
 #slider{width:100%}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.kv{display:grid;grid-template-columns:130px 1fr;gap:7px;font-family:ui-monospace,monospace;font-size:13px}.muted{color:#697586}pre{white-space:pre-wrap;overflow:auto;max-height:280px;background:#f7f8fa;padding:12px;border-radius:8px}
+.probability-table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}.probability-table th,.probability-table td{text-align:left;padding:9px 10px;border-bottom:1px solid #e5e9f0}.probability-table th:last-child,.probability-table td:last-child{text-align:right}.probability-bar{height:8px;border-radius:4px;background:#e5e9f0;overflow:hidden}.probability-fill{height:100%;background:#3d63dd}.probability-value{font-family:ui-monospace,monospace;min-width:90px;text-align:right}.probability-empty{color:#697586}
 @media(max-width:760px){.grid{grid-template-columns:1fr}}
 </style></head>
 <body><main class="app">
@@ -29,12 +30,23 @@ button,input{font:inherit}button{padding:8px 12px;border:1px solid #cbd2df;borde
 <div class="card"><div class="bar"><button id="first">|&lt;</button><button id="prev">&lt;</button><button id="play">▶ Play</button><button id="next">&gt;</button><button id="last">&gt;|</button><label class="speed">speed <input id="speed" type="range" min="0.25" max="4" step="0.25" value="1"><span id="speedText">1×</span></label></div>
 <input id="slider" type="range" min="0" max="0" value="0"><div class="timeline"><div class="track" id="track"></div></div></div>
 <div class="grid"><section class="card"><h2 id="title">No event</h2><div id="details" class="kv"></div></section><section class="card"><h2>Tensor metadata</h2><pre id="tensors">{}</pre><h2>Event metadata</h2><pre id="metadata">{}</pre></section></div>
+<section class="card"><div class="bar"><h2 style="margin:0">Final token probabilities</h2><span id="probabilitySummary" class="muted"></span></div><div id="probabilities"><p class="probability-empty">No probability output recorded.</p></div></section>
 </main><script>
 let trace={events:[]}, pos=0, timer=null;
 const $=id=>document.getElementById(id);
 async function load(){trace=await (await fetch('/trace.json')).json();$('summary').textContent=`${trace.events.length} events · ${trace.checkpoint||'unknown checkpoint'}`;$('slider').max=Math.max(0,trace.events.length-1);drawDots();render(0)}
 function drawDots(){const t=$('track');trace.events.forEach((e,i)=>{const d=document.createElement('button');d.className='dot'+(e.op==='layer_output'?' layer':'');d.title=`${e.step}: ${e.op}`;d.style.left=(trace.events.length<2?50:i*100/(trace.events.length-1))+'%';d.onclick=()=>render(i);t.appendChild(d)})}
-function render(i){if(!trace.events.length)return;pos=Math.max(0,Math.min(i,trace.events.length-1));const e=trace.events[pos];$('slider').value=pos;$('title').textContent=`Step ${e.step} · ${e.op}`;const rows=[['layer',e.layer??'—'],['name',e.name??'—'],['phase',e.phase],['snapshot',e.snapshot_id??'—']];$('details').innerHTML=rows.map(([k,v])=>`<div class="muted">${k}</div><div>${v}</div>`).join('');$('tensors').textContent=JSON.stringify(e.tensors||{},null,2);$('metadata').textContent=JSON.stringify(e.metadata||{},null,2);document.querySelectorAll('.dot').forEach((d,j)=>d.classList.toggle('current',j===pos))}
+function renderProbabilities(event){
+  const topK=event&&event.metadata&&Array.isArray(event.metadata.top_k)?event.metadata.top_k:null;
+  if(!topK||!topK.length){$('probabilities').innerHTML='<p class="probability-empty">No probability output recorded for this event.</p>';$('probabilitySummary').textContent='';return}
+  $('probabilitySummary').textContent=`top ${topK.length} · final sequence position`;
+  $('probabilities').innerHTML='<table class="probability-table"><thead><tr><th>Rank</th><th>Token ID</th><th>Probability</th><th style="width:45%">Distribution</th></tr></thead><tbody>'+topK.map((item,index)=>{
+    const p=Number(item.probability)||0;
+    const pct=(p*100).toFixed(4);
+    return `<tr><td>${index+1}</td><td><code>${item.token_id}</code></td><td class="probability-value">${pct}%</td><td><div class="probability-bar"><div class="probability-fill" style="width:${Math.max(0,Math.min(100,p*100))}%"></div></div></td></tr>`;
+  }).join('')+'</tbody></table>';
+}
+function render(i){if(!trace.events.length)return;pos=Math.max(0,Math.min(i,trace.events.length-1));const e=trace.events[pos];$('slider').value=pos;$('title').textContent=`Step ${e.step} · ${e.op}`;const rows=[['layer',e.layer??'—'],['name',e.name??'—'],['phase',e.phase],['snapshot',e.snapshot_id??'—']];$('details').innerHTML=rows.map(([k,v])=>`<div class="muted">${k}</div><div>${v}</div>`).join('');$('tensors').textContent=JSON.stringify(e.tensors||{},null,2);$('metadata').textContent=JSON.stringify(e.metadata||{},null,2);renderProbabilities(e);document.querySelectorAll('.dot').forEach((d,j)=>d.classList.toggle('current',j===pos))}
 function step(n){render(pos+n)}
 $('first').onclick=()=>render(0);$('prev').onclick=()=>step(-1);$('next').onclick=()=>step(1);$('last').onclick=()=>render(trace.events.length-1);$('slider').oninput=e=>render(+e.target.value);
 $('speed').oninput=e=>{$('speedText').textContent=e.target.value+'×';if(timer){stop();play()}};
