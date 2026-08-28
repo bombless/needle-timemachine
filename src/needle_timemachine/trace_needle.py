@@ -1,4 +1,4 @@
-"""CLI for producing the first real Needle Time Machine trace."""
+"""CLI for producing and serving a real Needle Time Machine trace."""
 
 from __future__ import annotations
 
@@ -47,6 +47,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prompt", required=True, help="Prompt to tokenize")
     parser.add_argument("--output", default="traces/run.json", help="Output trace JSON path")
     parser.add_argument("--trace-level", choices=("none", "layer"), default="layer")
+    parser.add_argument("--serve", action="store_true", help="Serve the trace in the local timeline UI")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8765)
     return parser
 
 
@@ -85,6 +88,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"layers:     {len(layer_events)}")
     print(f"events:     {len(tracer.events)}")
     print(f"saved:      {args.output}")
+
+    if args.serve:
+        from .ui import serve
+        serve(Path(args.output), args.host, args.port)
     return 0
 
 
