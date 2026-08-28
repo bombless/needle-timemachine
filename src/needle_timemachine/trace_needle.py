@@ -30,8 +30,8 @@ def _jsonable(value: Any) -> Any:
 
 def _find_logits(value: Any) -> np.ndarray:
     """Find the logits array in Needle's forward return value."""
-    if isinstance(value, np.ndarray):
-        return value
+    if hasattr(value, "shape") and hasattr(value, "dtype"):
+        return np.asarray(value)
     if isinstance(value, (list, tuple)):
         arrays = []
         for item in value:
@@ -49,7 +49,7 @@ def _find_logits(value: Any) -> np.ndarray:
 
 
 def _top_k_probabilities(logits: Any, top_k: int) -> list[dict[str, Any]]:
-    array = np.asarray(_find_logits(logits))
+    array = _find_logits(logits)
     if array.ndim < 2:
         raise ValueError(f"Expected logits with at least 2 dimensions, got {array.shape}")
     # Display probabilities for the final sequence position of the first batch.
