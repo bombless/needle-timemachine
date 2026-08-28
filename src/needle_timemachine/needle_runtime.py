@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .needle_adapter import NeedleAdapter
+from .needle_hooks import installed as install_runtime_hook
 from .trace import Tracer
 
 
@@ -18,16 +19,28 @@ class NeedleRuntime:
     tokenizer: Any
     config: Any
     adapter: NeedleAdapter
+    architecture: Any
+    trace_level: str = "layer"
 
     def hidden_states(self, tokens: Any, **kwargs: Any) -> Any:
         """Run the real upstream model's hidden-state path through the tracer."""
         variables = {"params": self.params}
-        hidden_states = self.model.apply(
-            variables,
-            tokens,
-            method=self.model.hidden_states,
-            **kwargs,
-        )
+        hook_context = install_runtime_hook(self.architecture, self.adapter.tracer) if self.trace_level == "op" else None
+        if hook_context is None:
+            hidden_states = self.model.apply(
+                variables,
+                tokens,
+                method=self.model.hidden_states,
+                **kwargs,
+            )
+        else:
+            with hook_context:
+                hidden_states = self.model.apply(
+                    variables,
+                    tokens,
+                    method=self.model.hidden_states,
+                    **kwargs,
+                )
         return self.adapter.record_hidden_states(tokens, hidden_states, emit_input=False)
 
     def logits(self, tokens: Any, **kwargs: Any) -> Any:
@@ -57,4 +70,4 @@ def load_needle_checkpoint(
     model = architecture.SimpleAttentionNetwork(config)
     tokenizer = tokenizer_mod.get_tokenizer(config.vocab_size)
     adapter = NeedleAdapter(model, tracer, trace_level=trace_level)
-    return NeedleRuntime(model, params, tokenizer, config, adapter)
+    return NeedleRuntime(model, params, tokenizer, config, adapter, architecture, trace_level)
