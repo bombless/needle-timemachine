@@ -1,19 +1,20 @@
-"""Small adapter for the upstream Needle Flax model.
+"""Adapter for tracing the upstream Needle Flax model.
 
-This module deliberately does not fork Needle. It provides stable trace points
-around the public model call and hidden-state API while we work toward finer
-operation-level instrumentation inside architecture.py.
+The first useful integration point is Needle's public ``hidden_states`` API.
+Needle already exposes the residual stream after every scanned Transformer
+block, so we can obtain a real per-layer timeline without rewriting Flax's
+``nn.scan`` implementation.
 """
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from .trace import Tracer
 
 
 class NeedleAdapter:
-    """Trace high-level Needle execution without modifying model semantics."""
+    """Trace high-level and layer-level Needle execution."""
 
     def __init__(self, model: Any, tracer: Tracer):
         self.model = model
@@ -21,7 +22,7 @@ class NeedleAdapter:
 
     def __call__(self, tokens: Any, **kwargs: Any) -> Any:
         self.tracer.emit(
-            "embedding_input", name="model.input", tensors={"tokens": tokens},
+            "model_input", name="model.input", tensors={"tokens": tokens},
             metadata={"shape_only": True},
         )
         output = self.model(tokens, **kwargs)
@@ -33,20 +34,55 @@ class NeedleAdapter:
         return output
 
     def hidden_states(self, tokens: Any, **kwargs: Any) -> Any:
-        self.tracer.emit("hidden_states_input", name="model.hidden_states", tensors={"tokens": tokens})
-        output = self.model.hidden_states(tokens, **kwargs)
-        self.tracer.emit("hidden_states_output", name="model.hidden_states.output", tensors={"hidden": output})
-        return output
+        """Run Needle's real hidden-state path and emit one event per layer.
+
+        The upstream implementation returns ``[B, T, L, C]`` where state 0 is
+        the embedding output and each following state is the output of one
+        Transformer block. We therefore get a real per-layer timeline without
+        replacing or monkey-patching Flax's ``nn.scan`` module.
+        """
+        self.tracer.emit(
+            "model_input", name="model.hidden_states.input",
+            tensors={"tokens": tokens}, metadata={"shape_only": True},
+        )
+
+        cells = self.model.hidden_states(tokens, **kwargs)
+        if not hasattr(cells, "shape") or len(cells.shape) != 4:
+            self.tracer.emit(
+                "hidden_states_output", name="model.hidden_states.output",
+                tensors={"hidden": cells},
+                metadata={"layer_trace": False},
+            )
+            return cells
+
+        num_states = int(cells.shape[2])
+        self.tracer.emit(
+            "embedding_output", layer=0, name="embedding.output",
+            tensors={"hidden": cells[:, :, 0, :]},
+            metadata={"state_index": 0, "layer_type": "embedding"},
+        )
+        for state_index in range(1, num_states):
+            layer = state_index - 1
+            self.tracer.emit(
+                "layer_output", layer=layer, name=f"layer.{layer}.output",
+                tensors={"hidden": cells[:, :, state_index, :]},
+                metadata={"state_index": state_index, "layer_type": "transformer"},
+            )
+
+        self.tracer.emit(
+            "hidden_states_output", name="model.hidden_states.output",
+            tensors={"hidden": cells},
+            metadata={"layer_count": max(0, num_states - 1)},
+        )
+        return cells
 
 
 def instrument_block_stack(stack: Any, tracer: Tracer) -> Any:
-    """Return a callable wrapper for Stack.
+    """Return a callable wrapper around a Stack boundary.
 
-    Fine-grained layer instrumentation is intentionally deferred until we can
-    safely account for Flax `nn.scan` and JIT semantics. This boundary gives us
-    a working adapter now and a single integration point for the next step.
+    The preferred layer-level path is :meth:`NeedleAdapter.hidden_states`,
+    because it preserves the upstream ``nn.scan`` execution exactly.
     """
-
     original = stack
 
     def call(x: Any, *args: Any, **kwargs: Any) -> Any:
