@@ -28,6 +28,44 @@ def _jsonable(value: Any) -> Any:
     return str(value)
 
 
+def _find_logits(value: Any) -> np.ndarray:
+    """Find the logits array in Needle's forward return value."""
+    if isinstance(value, np.ndarray):
+        return value
+    if isinstance(value, (list, tuple)):
+        arrays = []
+        for item in value:
+            try:
+                arrays.append(_find_logits(item))
+            except TypeError:
+                continue
+        if arrays:
+            # Prefer the usual [batch, sequence, vocab] logits tensor.
+            for array in arrays:
+                if array.ndim >= 2:
+                    return array
+            return arrays[0]
+    raise TypeError(f"Could not find logits array in model output of type {type(value)!r}")
+
+
+def _top_k_probabilities(logits: Any, top_k: int) -> list[dict[str, Any]]:
+    array = np.asarray(_find_logits(logits))
+    if array.ndim < 2:
+        raise ValueError(f"Expected logits with at least 2 dimensions, got {array.shape}")
+    # Display probabilities for the final sequence position of the first batch.
+    final_logits = np.asarray(array[0, -1], dtype=np.float64)
+    shifted = final_logits - np.max(final_logits)
+    exp = np.exp(shifted)
+    probabilities = exp / np.sum(exp)
+    k = min(max(1, int(top_k)), probabilities.size)
+    indices = np.argpartition(probabilities, -k)[-k:]
+    indices = indices[np.argsort(probabilities[indices])[::-1]]
+    return [
+        {"token_id": int(index), "probability": float(probabilities[index])}
+        for index in indices
+    ]
+
+
 def write_trace(path: Path, tracer: Tracer, *, checkpoint: str, prompt: str, config: Any) -> None:
     payload = {
         "format": "needle-timemachine.trace/v1",
@@ -52,6 +90,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="layer",
         help="layer records hidden states; op records runtime attention/MLP values",
     )
+    parser.add_argument("--top-k", type=int, default=5, help="Number of final-token probabilities to show in the UI")
     parser.add_argument("--serve", action="store_true", help="Serve the trace in the local timeline UI")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
@@ -60,6 +99,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
+    if args.top_k < 1:
+        raise ValueError("--top-k must be >= 1")
     tracer = Tracer()
     runtime = load_needle_checkpoint(
         args.checkpoint,
@@ -78,9 +119,17 @@ def main(argv: list[str] | None = None) -> int:
     print("-------------------")
     print(f"tokens:     {len(token_ids)}")
     print(f"trace:      {args.trace_level}")
+    print(f"top-k:      {args.top_k}")
     print(f"checkpoint: {args.checkpoint}")
 
     runtime.hidden_states(tokens)
+    logits = runtime.logits(tokens)
+    top_k = _top_k_probabilities(logits, args.top_k)
+    tracer.emit(
+        "probability_output",
+        name="model.output.probabilities",
+        metadata={"top_k": top_k, "position": "final", "source": "logits"},
+    )
     write_trace(
         Path(args.output),
         tracer,
