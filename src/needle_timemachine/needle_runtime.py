@@ -1,9 +1,4 @@
-"""Optional integration with the upstream Needle Python source tree.
-
-This module deliberately keeps Needle an external source dependency. It loads a
-Needle checkpoint with the upstream loader, constructs the upstream model, and
-runs the real ``hidden_states`` path through :class:`NeedleAdapter`.
-"""
+"""Optional integration with the upstream Needle Python source tree."""
 
 from __future__ import annotations
 
@@ -26,8 +21,6 @@ class NeedleRuntime:
 
     def hidden_states(self, tokens: Any, **kwargs: Any) -> Any:
         """Run the real upstream model's hidden-state path through the tracer."""
-        # hidden_states is an un-jitted model method; this is intentional for
-        # the first Time Machine prototype because it preserves observability.
         variables = {"params": self.params}
         hidden_states = self.model.apply(
             variables,
@@ -35,8 +28,11 @@ class NeedleRuntime:
             method=self.model.hidden_states,
             **kwargs,
         )
-        # Feed the already computed states through the adapter's event encoder.
-        return self.adapter.record_hidden_states(tokens, hidden_states)
+        return self.adapter.record_hidden_states(tokens, hidden_states, emit_input=False)
+
+    def logits(self, tokens: Any, **kwargs: Any) -> Any:
+        """Run the ordinary Needle forward path, recording model boundaries."""
+        return self.adapter(tokens, **kwargs)
 
 
 def load_needle_checkpoint(
@@ -46,12 +42,7 @@ def load_needle_checkpoint(
     tracer: Tracer,
     trace_level: str = "layer",
 ) -> NeedleRuntime:
-    """Load a real upstream Needle checkpoint without copying Needle sources.
-
-    ``needle_source`` is the local checkout of ``cactus-compute/needle``. It is
-    added to ``sys.path`` only for this call, allowing the adapter repository to
-    remain independent from the upstream project.
-    """
+    """Load a real upstream Needle checkpoint without copying Needle sources."""
     import sys
 
     source = str(Path(needle_source).resolve())
