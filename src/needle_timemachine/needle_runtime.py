@@ -21,6 +21,8 @@ class NeedleRuntime:
     adapter: NeedleAdapter
     architecture: Any
     trace_level: str = "layer"
+    kv_patch: Any = None
+    kv_cache: Any = None
 
     def hidden_states(self, tokens: Any, **kwargs: Any) -> Any:
         """Run the real upstream model's hidden-state path through the tracer."""
@@ -61,6 +63,43 @@ class NeedleRuntime:
         self.adapter.tracer.emit("model_output", name="model.output", tensors=tensors)
         return output
 
+    def kv_prefill(self, tokens: Any, *, quant: bool = False) -> Any:
+        if self.kv_patch is None:
+            raise RuntimeError("KV cache patch is not installed")
+        self.kv_patch.set_active(True)
+        self.kv_patch.set_position(0)
+        output, updates = self.model.apply(
+            {"params": self.params, "cache": self.kv_cache}, tokens,
+            quant=quant, use_kv_cache=True, mutable=["cache"],
+        )
+        self.kv_cache = updates["cache"]
+        return output
+
+    def kv_decode(self, token: Any, history: Any, position: int, *, quant: bool = False) -> Any:
+        if self.kv_patch is None:
+            raise RuntimeError("KV cache patch is not installed")
+        self.kv_patch.set_active(True)
+        self.kv_patch.set_position(position)
+        output, updates = self.model.apply(
+            {"params": self.params, "cache": self.kv_cache}, token,
+            method=self.model.cached_logits, engram_tokens=history,
+            quant=quant, mutable=["cache"],
+        )
+        self.kv_cache = updates["cache"]
+        return output
+
+
+def _load_kv_patch(architecture: Any, max_seq_len: int):
+    import sys
+    root = Path(__file__).resolve().parents[2]
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    from tools import patch_kv_cache
+    patch_kv_cache.install(architecture, max_seq_len)
+    patch_kv_cache.configure(max_seq_len, 0)
+    patch_kv_cache.patch_runtime(NeedleRuntime)
+    return patch_kv_cache
+
 
 def _checkpoint_error(path: str, exc: ValueError) -> ValueError:
     return ValueError(
@@ -81,13 +120,15 @@ def load_needle_checkpoint(
     tracer: Tracer,
     trace_level: str = "layer",
 ) -> NeedleRuntime:
-    """Load a real upstream Needle 2 checkpoint without copying Needle sources.
+    """Load Needle 2 and install the repo-local KV-cache patch.
 
     A missing checkpoint name is resolved by the upstream loader from its
     Cactus-Compute/needle2 Hugging Face repository. In particular,
     ``--checkpoint needle2.pkl`` resolves to ``checkpoints/needle2.pkl``.
     """
     import sys
+    import jax
+    import jax.numpy as jnp
 
     source = str(Path(needle_source).resolve())
     if source not in sys.path:
@@ -107,4 +148,15 @@ def load_needle_checkpoint(
     model = architecture.SimpleAttentionNetwork(config)
     tokenizer = tokenizer_mod.get_tokenizer(config.vocab_size)
     adapter = NeedleAdapter(model, tracer, trace_level=trace_level)
-    return NeedleRuntime(model, params, tokenizer, config, adapter, architecture, trace_level)
+
+    patch = _load_kv_patch(architecture, config.max_seq_len)
+    patch.set_active(True)
+    cache_variables = model.init(
+        jax.random.key(0), jnp.zeros((1, 1), dtype=jnp.int32), use_kv_cache=True
+    )
+    kv_cache = cache_variables["cache"]
+    patch.set_active(False)
+    return NeedleRuntime(
+        model, params, tokenizer, config, adapter, architecture, trace_level,
+        kv_patch=patch, kv_cache=kv_cache,
+    )

@@ -6,7 +6,6 @@ from .snapshot import SnapshotStore
 from .replay import ReplayCursor
 from .needle_adapter import NeedleAdapter, instrument_block_stack
 from .ui import serve
-from .tool_eval import CASES, EvalCase, evaluate
 
 __all__ = [
     "NeedleAdapter",
@@ -30,4 +29,7 @@ def __getattr__(name):
     if name == "NeedleRuntime":
         from .needle_runtime import NeedleRuntime
         return NeedleRuntime
+    if name in {"CASES", "EvalCase", "evaluate"}:
+        from . import tool_eval
+        return getattr(tool_eval, name)
     raise AttributeError(name)

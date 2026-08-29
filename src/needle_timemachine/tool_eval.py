@@ -251,13 +251,41 @@ def _sse(handler: BaseHTTPRequestHandler, event: Dict[str, Any]) -> None:
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Serve the Needle tool evaluation workbench.")
-    p.add_argument("--checkpoint")
-    p.add_argument("--needle-source")
+    p = argparse.ArgumentParser(description="Serve or directly test the Needle tool evaluation workbench.")
+    p.add_argument("--checkpoint", default=r"d:\Downloads\needle2.pkl")
+    p.add_argument("--needle-source", default=r"d:\needle2\needle")
     p.add_argument("--max-new-tokens", type=int, default=128)
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8787)
+    p.add_argument("--test", action="store_true", help="Run one local inference and exit instead of starting HTTP server")
+    p.add_argument("--test-prompt", default="调用 set_lights，房间 1，亮度 50", help="Prompt used by --test")
     return p
+
+
+def run_test(checkpoint: str, needle_source: str, prompt: str, max_new_tokens: int) -> int:
+    """Run one real backend request for checkpoint/KV-cache smoke testing."""
+    backend = NeedleChatBackend(checkpoint, needle_source, max_new_tokens=max_new_tokens)
+    payload = {
+        "model": "needle",
+        "messages": [{"role": "user", "content": prompt}],
+        "tools": [_tool(
+            "set_lights", "调节灯光",
+            {"room": {"type": "string"}, "brightness": {"type": "integer"}},
+            ["room", "brightness"],
+        )],
+        "max_new_tokens": max_new_tokens,
+    }
+    for event in backend.stream_complete(payload):
+        if event.get("type") == "progress":
+            phase = event.get("phase", "")
+            step = event.get("step", "")
+            tps = event.get("tps", "")
+            print(f"[{phase}] step={step} tps={tps} token={event.get('token_text', '')!r}")
+        elif event.get("type") == "forward_timing":
+            print(f"[timing] step={event.get('step')} elapsed_ms={event.get('elapsed_ms')}")
+        elif event.get("type") == "result":
+            print(json.dumps(event["response"], ensure_ascii=False, indent=2))
+    return 0
 
 
 def serve(host: str = "127.0.0.1", port: int = 8787, *, checkpoint: Optional[str] = None,
@@ -318,6 +346,8 @@ def serve(host: str = "127.0.0.1", port: int = 8787, *, checkpoint: Optional[str
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_arg_parser().parse_args(argv)
+    if args.test:
+        return run_test(args.checkpoint, args.needle_source, args.test_prompt, args.max_new_tokens)
     serve(args.host, args.port, checkpoint=args.checkpoint, needle_source=args.needle_source,
           max_new_tokens=args.max_new_tokens)
     return 0
