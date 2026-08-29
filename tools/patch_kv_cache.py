@@ -1,10 +1,7 @@
 """Runtime KV-cache patch for the upstream Needle submodule.
 
-The patch deliberately lives outside ``needle/``.  It monkey-patches the
-upstream Flax modules after they are imported, so the git submodule remains
-pristine.  The cache is a mutable Flax collection carried through Needle's
-layer scan.  ``cached_logits`` runs the model on one token during decode;
-attention reuses the K/V tensors produced by the prefill pass.
+The patch deliberately lives outside ``needle/``. It monkey-patches the
+upstream Flax modules after import, so the git submodule remains pristine.
 """
 from __future__ import annotations
 
@@ -14,6 +11,7 @@ import jax.numpy as jnp
 
 
 _ENABLED = False
+_ACTIVE = False
 _MAX_SEQ_LEN = 0
 _CACHE_POS = 0
 _ORIGINAL_SCAN = None
@@ -31,6 +29,11 @@ def configure(max_seq_len: int, cache_pos: int = 0) -> None:
 def set_position(cache_pos: int) -> None:
     global _CACHE_POS
     _CACHE_POS = int(cache_pos)
+
+
+def set_active(active: bool) -> None:
+    global _ACTIVE
+    _ACTIVE = bool(active)
 
 
 def _cache_init(_, shape, dtype=jnp.bfloat16):
@@ -51,8 +54,8 @@ def install(architecture: Any, max_seq_len: int) -> None:
     _ORIGINAL_MODEL_CALL = architecture.SimpleAttentionNetwork.__call__
 
     def scan_with_cache(*args, **kwargs):
-        # Needle's Stack is implemented with nn.scan over layers.  A cache is
-        # a recurrent mutable collection, so it must be declared as a carry.
+        if not _ACTIVE:
+            return _ORIGINAL_SCAN(*args, **kwargs)
         carry = kwargs.get("variable_carry", False)
         if carry is False:
             kwargs["variable_carry"] = "cache"
@@ -65,16 +68,14 @@ def install(architecture: Any, max_seq_len: int) -> None:
     nn.scan = scan_with_cache
 
     def mha(self, x, mask=None, rope=None, quant=False, use_kv_cache=False):
-        if not use_kv_cache:
+        if not (_ACTIVE and use_kv_cache):
             return _ORIGINAL_MHA(self, x, mask=mask, rope=rope, quant=quant)
 
         attn_dim = self.attn_dim or self.d_model
         head_dim = attn_dim // self.num_heads
         kv_dim = self.num_kv_heads * head_dim
-        B = x.shape[0]
-        T = x.shape[1]
-        capacity = _MAX_SEQ_LEN
-        pos = _CACHE_POS
+        B, T = x.shape[0], x.shape[1]
+        capacity, pos = _MAX_SEQ_LEN, _CACHE_POS
         if pos + T > capacity:
             raise ValueError(f"KV cache overflow: position={pos}, tokens={T}, capacity={capacity}")
 
@@ -94,21 +95,16 @@ def install(architecture: Any, max_seq_len: int) -> None:
 
         if rope is not None:
             cos, sin = rope
-            # Decode inputs contain only the new token, so use its absolute
-            # position rather than position zero.
             half = q.shape[-1] // 2
             cos_q = cos[pos:pos + T][None, None, :, :]
             sin_q = sin[pos:pos + T][None, None, :, :]
             q1, q2 = q[..., :half], q[..., half:]
-            q = jnp.concatenate([q1 * cos_q - q2 * sin_q,
-                                 q2 * cos_q + q1 * sin_q], axis=-1).astype(q.dtype)
             k1, k2 = k[..., :half], k[..., half:]
-            k = jnp.concatenate([k1 * cos_q - k2 * sin_q,
-                                 k2 * cos_q + k1 * sin_q], axis=-1).astype(k.dtype)
+            q = jnp.concatenate([q1 * cos_q - q2 * sin_q, q2 * cos_q + q1 * sin_q], axis=-1).astype(q.dtype)
+            k = jnp.concatenate([k1 * cos_q - k2 * sin_q, k2 * cos_q + k1 * sin_q], axis=-1).astype(k.dtype)
 
         k = architecture._quantize.maybe_quant_kv(k, quant)
         v = architecture._quantize.maybe_quant_kv(v, quant)
-
         ck = self.variable("cache", "k", _cache_init,
                            (B, self.num_kv_heads, capacity, head_dim), self.dtype)
         cv = self.variable("cache", "v", _cache_init,
@@ -117,8 +113,6 @@ def install(architecture: Any, max_seq_len: int) -> None:
         cv.value = cv.value.at[:, :, pos:pos + T, :].set(v)
         k_all, v_all = ck.value, cv.value
 
-        # GQA: flash attention consumes (B,T,H,D), while the cached tensors
-        # are stored compactly as (B,H_kv,T,D).
         repeats = self.num_heads // self.num_kv_heads
         if repeats > 1:
             k_all = jnp.repeat(k_all, repeats, axis=1)
@@ -126,18 +120,14 @@ def install(architecture: Any, max_seq_len: int) -> None:
 
         key_pos = jnp.arange(capacity)[None, None, None, :]
         query_pos = (pos + jnp.arange(T))[None, None, :, None]
-        cache_mask = key_pos <= query_pos
-        cache_mask = jnp.broadcast_to(cache_mask, (B, 1, T, capacity))
+        cache_mask = jnp.broadcast_to(key_pos <= query_pos, (B, 1, T, capacity))
 
         if self.flash:
             impl = ("cudnn" if architecture.jax.default_backend() == "gpu"
                     and q.dtype in (jnp.bfloat16, jnp.float16) else None)
             out = architecture.jax.nn.dot_product_attention(
-                q.transpose(0, 2, 1, 3),
-                k_all.transpose(0, 2, 1, 3),
-                v_all.transpose(0, 2, 1, 3),
-                mask=cache_mask,
-                implementation=impl,
+                q.transpose(0, 2, 1, 3), k_all.transpose(0, 2, 1, 3),
+                v_all.transpose(0, 2, 1, 3), mask=cache_mask, implementation=impl,
             ).reshape(B, T, attn_dim)
         else:
             scale = jnp.sqrt(jnp.float32(head_dim))
@@ -148,7 +138,7 @@ def install(architecture: Any, max_seq_len: int) -> None:
 
         out = out * architecture.nn.sigmoid(
             architecture.nn.Dense(attn_dim, dtype=self.dtype, use_bias=False,
-                                   kernel_init=architecture.default_init(), name="gate_proj")(x))
+                                  kernel_init=architecture.default_init(), name="gate_proj")(x))
         out = architecture._aq(out, quant)
         return architecture.nn.Dense(self.d_model, dtype=self.dtype, use_bias=False,
                                      kernel_init=architecture.residual_init(self.num_layers),
@@ -170,7 +160,6 @@ def install(architecture: Any, max_seq_len: int) -> None:
     architecture.SimpleAttentionNetwork.__call__ = model_call
 
     def cached_logits(self, tokens, quant=False):
-        """One-token forward used during decode; cache position is global."""
         if tokens.shape[1] != 1:
             raise ValueError("cached_logits expects exactly one token")
         return self.__call__(tokens, quant=quant, use_kv_cache=True)
