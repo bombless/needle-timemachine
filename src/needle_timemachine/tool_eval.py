@@ -39,9 +39,12 @@ def _tool(name: str, description: str, properties: Dict[str, Any], required: Lis
 
 
 CASES = [
-    EvalCase("exact", "精确调用与参数类型", "基础选择", "把北京明天的天气转换成摄氏度，并告诉我是否需要带伞。",
-             [_tool("get_weather", "查询指定城市和日期的天气。", {"city": {"type": "string"}, "date": {"type": "string", "description": "YYYY-MM-DD"}, "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]}}, ["city", "date", "unit"])],
-             "get_weather", {"city": "北京", "unit": "celsius"}, rubric="日期应根据当前日期正确解析；unit 必须是枚举值。"),
+    EvalCase("exact", "精确调用与参数类型", "基础选择", "调用 set_lights, 房间 1, 亮度 0",
+             [_tool("set_lights", "调节灯光",
+                    {"room": {"type": "string"},
+                     "brightness": {"type": "integer", "minimum": 0, "maximum": 100}},
+                    ["room", "brightness"])],
+             "set_lights", {"room": "1", "brightness": 0}, rubric="应调用 set_lights 并正确填写房间与亮度参数。"),
     EvalCase("disambiguate", "相似工具消歧", "选择边界", "查一下订单 A-1042 现在到哪了，不要取消订单。",
              [_tool("get_order_status", "查询订单物流和处理状态。", {"order_id": {"type": "string"}}, ["order_id"]), _tool("cancel_order", "取消尚未发货的订单。", {"order_id": {"type": "string"}, "reason": {"type": "string"}}, ["order_id", "reason"])],
              "get_order_status", {"order_id": "A-1042"}, rubric="明确的否定约束不能被忽略或触发副作用工具。"),
