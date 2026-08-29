@@ -67,7 +67,6 @@ def install(architecture: Any, max_seq_len: int) -> None:
         capacity, pos = _MAX_SEQ_LEN, _CACHE_POS
         if pos + T > capacity:
             raise ValueError(f"KV cache overflow: position={pos}, tokens={T}, capacity={capacity}")
-
         x = architecture._aq(x, quant)
         q = architecture.nn.Dense(attn_dim, dtype=self.dtype, use_bias=False, kernel_init=architecture.default_init(), name="q_proj")(x)
         k = architecture.nn.Dense(kv_dim, dtype=self.dtype, use_bias=False, kernel_init=architecture.default_init(), name="k_proj")(x)
@@ -125,10 +124,18 @@ def install(architecture: Any, max_seq_len: int) -> None:
         return architecture._aq(x, quant).astype(jnp.float32) @ self.embedding.embedding.T
     architecture.SimpleAttentionNetwork.__call__ = model_call
 
-    def cached_logits(self, tokens, quant=False):
+    def cached_logits(self, tokens, engram_tokens=None, quant=False):
+        """Run one new token; Engram lookup may use the complete history."""
         if tokens.shape[1] != 1:
             raise ValueError("cached_logits expects exactly one token")
-        return self.__call__(tokens, quant=quant, use_kv_cache=True)
+        history = tokens if engram_tokens is None else engram_tokens
+        full_mask = architecture.make_causal_mask(history.shape[1])
+        engram_kv = self._engram_kv(history, full_mask, quant)
+        engram_kv = (engram_kv[0][:, :, -1:], engram_kv[1][:, :, -1:])
+        x = self.embedding(tokens) * self.embed_scale
+        rope = self._rope(_MAX_SEQ_LEN)
+        x, _ = self.stack(x, mask=full_mask, rope=rope, engram_kv=engram_kv, quant=quant)
+        return architecture._aq(x, quant).astype(jnp.float32) @ self.embedding.embedding.T
     architecture.SimpleAttentionNetwork.cached_logits = cached_logits
     _ENABLED = _INSTALLED = True
 
