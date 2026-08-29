@@ -1,6 +1,7 @@
 """Runtime KV-cache patch for the upstream Needle submodule."""
 from __future__ import annotations
 from typing import Any
+import numpy as np
 import jax.numpy as jnp
 
 _ENABLED = False
@@ -125,7 +126,6 @@ def install(architecture: Any, max_seq_len: int) -> None:
     architecture.SimpleAttentionNetwork.__call__ = model_call
 
     def cached_logits(self, tokens, engram_tokens=None, quant=False):
-        """Run one new token; Engram lookup may use the complete history."""
         if tokens.shape[1] != 1:
             raise ValueError("cached_logits expects exactly one token")
         history = tokens if engram_tokens is None else engram_tokens
@@ -138,6 +138,37 @@ def install(architecture: Any, max_seq_len: int) -> None:
         return architecture._aq(x, quant).astype(jnp.float32) @ self.embedding.embedding.T
     architecture.SimpleAttentionNetwork.cached_logits = cached_logits
     _ENABLED = _INSTALLED = True
+
+
+def patch_runtime(runtime_cls: Any) -> None:
+    """Make the existing ``NeedleRuntime.logits`` API transparently cached.
+
+    ``tool_eval.py`` can therefore keep its existing API: the first call is a
+    prefill and each subsequent call that extends the same token prefix by one
+    token becomes a one-token cached decode.
+    """
+    if getattr(runtime_cls, "_kv_cache_patched", False):
+        return
+    original = runtime_cls.logits
+
+    def logits(self, tokens, **kwargs):
+        arr = np.asarray(tokens)
+        if self.kv_patch is None or arr.ndim != 2 or arr.shape[0] != 1:
+            return original(self, tokens, **kwargs)
+        ids = arr[0].astype(np.int32).tolist()
+        previous = getattr(self, "_kv_tokens", None)
+        if previous == ids:
+            return self._kv_last_logits
+        if previous is not None and len(ids) == len(previous) + 1 and ids[:-1] == previous:
+            output = self.kv_decode(arr[:, -1:], arr, len(previous), quant=bool(kwargs.get("quant", False)))
+        else:
+            output = self.kv_prefill(arr, quant=bool(kwargs.get("quant", False)))
+        self._kv_tokens = ids
+        self._kv_last_logits = output
+        return output
+
+    runtime_cls.logits = logits
+    runtime_cls._kv_cache_patched = True
 
 
 def enabled() -> bool:
