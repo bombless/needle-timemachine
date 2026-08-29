@@ -322,7 +322,7 @@ def serve(host: str = "127.0.0.1", port: int = 8787, *, checkpoint: Optional[str
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
             self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
-            self.send_header("Connection", "keep-alive")
+            self.send_header("Connection", "close")
             self.end_headers()
             try:
                 for event in backend.stream_complete(payload):
@@ -330,6 +330,8 @@ def serve(host: str = "127.0.0.1", port: int = 8787, *, checkpoint: Optional[str
                 _sse(self, {"type": "done"})
             except Exception as exc:
                 _sse(self, {"type": "error", "error": str(exc)})
+            finally:
+                self.close_connection = True
 
         def log_message(self, fmt: str, *args: Any) -> None:
             return

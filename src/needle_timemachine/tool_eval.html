@@ -46,6 +46,7 @@ async function runEvaluation(){
         if(!response.body)throw Error('服务器未返回可读流');
         const reader=response.body.getReader(),decoder=new TextDecoder();
         let buffer='';
+        let completed=false;
         while(true){
             const {value,done}=await reader.read();
             if(done)break;
@@ -55,8 +56,15 @@ async function runEvaluation(){
             for(const part of parts){
                 const line=part.split('\n').find(x=>x.startsWith('data: '));
                 if(!line)continue;
-                handle(JSON.parse(line.slice(6)));
+                const event=JSON.parse(line.slice(6));
+                handle(event);
+                if(event.type==='done'){
+                    completed=true;
+                    await reader.cancel();
+                    break;
+                }
             }
+            if(completed)break;
         }
         buffer+=decoder.decode();
         if(buffer.trim()){
@@ -93,6 +101,8 @@ function handle(e){
     }else if(e.type==='error'){
         $('error').textContent=e.error||'请求失败';
         $('status').textContent='失败';
+    }else if(e.type==='done'){
+        $('status').textContent='完成';
     }
 }
 function evaluate(response){if(!selected)return;let calls=response.choices?.[0]?.message?.tool_calls||[];let names=calls.map(c=>c.function?.name);let checks=[];if(selected.must_not_call)checks.push({name:'不应调用工具',passed:!calls,detail:names.join(', ')||'无工具调用'});else{checks.push({name:'工具选择',passed:names.includes(selected.expected_tool),detail:names.join(', ')||'无工具调用'});for(let[k,v]of Object.entries(selected.expected_args||{})){let hit=calls.filter(c=>c.function?.name===selected.expected_tool).map(c=>{try{return JSON.parse(c.function.arguments||'{}')}catch{return{}}});let actual=hit.length===1?hit[0]?.[k]:hit.map(x=>x?.[k]);let passed=Array.isArray(v)?(actual===v||Array.isArray(actual)&&v.every(x=>actual.includes(x))):typeof v==='string'&&typeof actual==='string'?actual.toLowerCase().includes(v.toLowerCase()):actual===v;checks.push({name:'参数 '+k,passed,detail:JSON.stringify(actual)})}}$('checks').innerHTML=checks.map(c=>`<div class="check ${c.passed?'pass':'fail'}"><b>${c.passed?'✓':'✗'} ${esc(c.name)}</b> · ${esc(c.detail)}</div>`).join('')}
