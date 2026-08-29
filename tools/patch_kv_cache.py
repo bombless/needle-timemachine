@@ -48,18 +48,16 @@ def install(architecture: Any, max_seq_len: int) -> None:
     def scan_with_cache(*args, **kwargs):
         if not _ACTIVE:
             return _ORIGINAL_SCAN(*args, **kwargs)
-        # Each Transformer layer needs its own K/V state. Scanning the cache
-        # along axis 0 gives one cache slice per layer; carrying it would
-        # incorrectly make layer N consume layer N-1's cache.
         axes = dict(kwargs.get("variable_axes", {}))
         axes["cache"] = 0
         kwargs["variable_axes"] = axes
         return _ORIGINAL_SCAN(*args, **kwargs)
     nn.scan = scan_with_cache
 
-    def mha(self, x, mask=None, rope=None, quant=False, use_kv_cache=False):
+    def mha(self, x, mask=None, rope=None, quant=False, use_kv_cache=False, **kwargs):
+        """MHA wrapper accepting Needle tracing kwargs such as trace_layer."""
         if not _ACTIVE:
-            return _ORIGINAL_MHA(self, x, mask=mask, rope=rope, quant=quant)
+            return _ORIGINAL_MHA(self, x, mask=mask, rope=rope, quant=quant, **kwargs)
         attn_dim = self.attn_dim or self.d_model
         head_dim = attn_dim // self.num_heads
         kv_dim = self.num_kv_heads * head_dim
@@ -112,9 +110,9 @@ def install(architecture: Any, max_seq_len: int) -> None:
         return architecture.nn.Dense(self.d_model, dtype=self.dtype, use_bias=False, kernel_init=architecture.residual_init(self.num_layers), name="out_proj")(out)
     architecture.MultiHeadAttention.__call__ = mha
 
-    def model_call(self, tokens, mask=None, quant=False, return_mtp=False, use_kv_cache=False):
+    def model_call(self, tokens, mask=None, quant=False, return_mtp=False, use_kv_cache=False, **kwargs):
         if not use_kv_cache:
-            return _ORIGINAL_MODEL_CALL(self, tokens, mask=mask, quant=quant, return_mtp=return_mtp)
+            return _ORIGINAL_MODEL_CALL(self, tokens, mask=mask, quant=quant, return_mtp=return_mtp, **kwargs)
         if mask is None:
             mask = architecture.make_causal_mask(tokens.shape[1])
         x = self.embedding(tokens) * self.embed_scale
@@ -124,7 +122,7 @@ def install(architecture: Any, max_seq_len: int) -> None:
         return architecture._aq(x, quant).astype(jnp.float32) @ self.embedding.embedding.T
     architecture.SimpleAttentionNetwork.__call__ = model_call
 
-    def cached_logits(self, tokens, engram_tokens=None, quant=False):
+    def cached_logits(self, tokens, engram_tokens=None, quant=False, **kwargs):
         if tokens.shape[1] != 1:
             raise ValueError("cached_logits expects exactly one token")
         history = tokens if engram_tokens is None else engram_tokens
@@ -146,7 +144,7 @@ def patch_runtime(runtime_cls: Any) -> None:
     original = runtime_cls.logits
     def logits(self, tokens, **kwargs):
         arr = np.asarray(tokens)
-        if self.kv_patch is None or arr.ndim != 2 or arr.shape[0] != 1:
+        if getattr(self, "kv_patch", None) is None or arr.ndim != 2 or arr.shape[0] != 1:
             return original(self, tokens, **kwargs)
         ids = arr[0].astype(np.int32).tolist()
         previous = getattr(self, "_kv_tokens", None)
