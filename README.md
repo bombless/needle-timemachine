@@ -99,6 +99,21 @@ python -m needle_timemachine.trace_needle ^
 
 Then open `http://127.0.0.1:8765/`.
 
+## Tool-calling evaluation workbench
+
+`tool_eval` is a separate, zero-dependency browser module that starts its own OpenAI-compatible `/v1/chat/completions` endpoint. The browser and model endpoint share one port; no second inference server URL is needed in the page. It includes templates for exact selection, similar-tool disambiguation, parallel calls, missing-argument clarification, prompt-injection resistance, strict JSON types, and no-tool answers.
+
+Start it with a real Needle 2 checkpoint:
+
+```bat
+py -3.11 -m needle_timemachine.tool_eval ^
+  --checkpoint d:\path\to\needle2.pkl ^
+  --needle-source d:\needle2\needle ^
+  --host 127.0.0.1 --port 8787
+```
+
+Open `http://127.0.0.1:8787/` and run an individual case or the full set. The built-in endpoint is `POST /v1/chat/completions`; the evaluator calls it internally through `POST /api/run`. The evaluator scores tool choice, required argument values, and cases where a tool call must not happen. The prompt and tools JSON remain editable so the templates can be adapted to the model.
+
 Operation-level tracing is intentionally a debugger mode: runtime callbacks can perturb compilation/fusion and add substantial overhead. JAX explicitly warns that debugging callbacks can change the compiled computation, so production performance should always be measured with tracing disabled. citeturn1search7
 
 ## Current visual debugger
