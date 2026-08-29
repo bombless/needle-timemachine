@@ -48,13 +48,12 @@ def install(architecture: Any, max_seq_len: int) -> None:
     def scan_with_cache(*args, **kwargs):
         if not _ACTIVE:
             return _ORIGINAL_SCAN(*args, **kwargs)
-        carry = kwargs.get("variable_carry", False)
-        if carry is False:
-            kwargs["variable_carry"] = "cache"
-        elif isinstance(carry, str):
-            kwargs["variable_carry"] = (carry, "cache") if carry != "cache" else carry
-        elif "cache" not in carry:
-            kwargs["variable_carry"] = tuple(carry) + ("cache",)
+        # Each Transformer layer needs its own K/V state. Scanning the cache
+        # along axis 0 gives one cache slice per layer; carrying it would
+        # incorrectly make layer N consume layer N-1's cache.
+        axes = dict(kwargs.get("variable_axes", {}))
+        axes["cache"] = 0
+        kwargs["variable_axes"] = axes
         return _ORIGINAL_SCAN(*args, **kwargs)
     nn.scan = scan_with_cache
 
@@ -141,16 +140,10 @@ def install(architecture: Any, max_seq_len: int) -> None:
 
 
 def patch_runtime(runtime_cls: Any) -> None:
-    """Make the existing ``NeedleRuntime.logits`` API transparently cached.
-
-    ``tool_eval.py`` can therefore keep its existing API: the first call is a
-    prefill and each subsequent call that extends the same token prefix by one
-    token becomes a one-token cached decode.
-    """
+    """Make the existing ``NeedleRuntime.logits`` API transparently cached."""
     if getattr(runtime_cls, "_kv_cache_patched", False):
         return
     original = runtime_cls.logits
-
     def logits(self, tokens, **kwargs):
         arr = np.asarray(tokens)
         if self.kv_patch is None or arr.ndim != 2 or arr.shape[0] != 1:
@@ -166,7 +159,6 @@ def patch_runtime(runtime_cls: Any) -> None:
         self._kv_tokens = ids
         self._kv_last_logits = output
         return output
-
     runtime_cls.logits = logits
     runtime_cls._kv_cache_patched = True
 
