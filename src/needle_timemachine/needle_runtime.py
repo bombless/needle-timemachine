@@ -46,10 +46,7 @@ class NeedleRuntime:
             raise RuntimeError("KV cache patch is not installed")
         self.kv_patch.set_active(True)
         self.kv_patch.set_position(0)
-        output, updates = self.model.apply(
-            {"params": self.params, "cache": self.kv_cache},
-            tokens, quant=quant, use_kv_cache=True, mutable=["cache"],
-        )
+        output, updates = self.model.apply({"params": self.params, "cache": self.kv_cache}, tokens, quant=quant, use_kv_cache=True, mutable=["cache"])
         self.kv_cache = updates["cache"]
         return output
 
@@ -58,11 +55,7 @@ class NeedleRuntime:
             raise RuntimeError("KV cache patch is not installed")
         self.kv_patch.set_active(True)
         self.kv_patch.set_position(position)
-        output, updates = self.model.apply(
-            {"params": self.params, "cache": self.kv_cache}, token,
-            method=self.model.cached_logits, engram_tokens=history,
-            quant=quant, mutable=["cache"],
-        )
+        output, updates = self.model.apply({"params": self.params, "cache": self.kv_cache}, token, method=self.model.cached_logits, engram_tokens=history, quant=quant, mutable=["cache"])
         self.kv_cache = updates["cache"]
         return output
 
@@ -75,6 +68,7 @@ def _load_kv_patch(architecture: Any, max_seq_len: int):
     from tools import patch_kv_cache
     patch_kv_cache.install(architecture, max_seq_len)
     patch_kv_cache.configure(max_seq_len, 0)
+    patch_kv_cache.patch_runtime(NeedleRuntime)
     return patch_kv_cache
 
 
@@ -121,12 +115,7 @@ def load_needle_checkpoint(
 
     patch = _load_kv_patch(architecture, config.max_seq_len)
     patch.set_active(True)
-    cache_variables = model.init(
-        jax.random.key(0), jnp.zeros((1, 1), dtype=jnp.int32), use_kv_cache=True
-    )
+    cache_variables = model.init(jax.random.key(0), jnp.zeros((1, 1), dtype=jnp.int32), use_kv_cache=True)
     kv_cache = cache_variables["cache"]
     patch.set_active(False)
-    return NeedleRuntime(
-        model, params, tokenizer, config, adapter, architecture, trace_level,
-        kv_patch=patch, kv_cache=kv_cache,
-    )
+    return NeedleRuntime(model, params, tokenizer, config, adapter, architecture, trace_level, kv_patch=patch, kv_cache=kv_cache)
