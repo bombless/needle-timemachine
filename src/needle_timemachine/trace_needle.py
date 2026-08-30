@@ -93,7 +93,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Trace a real Needle checkpoint.")
     parser.add_argument("--checkpoint", required=True, help="Needle checkpoint path")
     parser.add_argument("--needle-source", required=True, help="Local cactus-compute/needle checkout")
-    parser.add_argument("--prompt", help="Prompt to tokenize (defaults to cases.py BASE_CASE prompt)")
+    parser.add_argument("--prompt", help="Prompt to tokenize (defaults to cases.py BASE_CASE prompt and tools)")
     parser.add_argument("--output", default="traces/run.json", help="Output trace JSON path")
     parser.add_argument(
         "--trace-level",
@@ -108,11 +108,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _default_prompt() -> str:
+    """Build the default model prompt from BASE_CASE's user prompt and tools."""
+    tools = json.dumps(BASE_CASE.tools, ensure_ascii=False, indent=2)
+    return f"{BASE_CASE.prompt}\n\nTools:\n{tools}"
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     if args.top_k < 1:
         raise ValueError("--top-k must be >= 1")
-    prompt = args.prompt if args.prompt is not None else BASE_CASE.prompt
+    prompt = args.prompt if args.prompt is not None else _default_prompt()
     tracer = Tracer()
     runtime = load_needle_checkpoint(
         args.checkpoint,
