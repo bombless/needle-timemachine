@@ -106,7 +106,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=str(DEFAULT_NEEDLE_SOURCE),
         help=f"Local cactus-compute/needle checkout (default: {DEFAULT_NEEDLE_SOURCE})",
     )
-    parser.add_argument("--prompt", help="Prompt to tokenize (defaults to cases.py BASE_CASE prompt and tools)")
+    parser.add_argument("--prompt", help="Prompt to tokenize (defaults to cases.py BASE_CASE prompt and tools")
     parser.add_argument("--output", default="traces/run.json", help="Output trace JSON path")
     parser.add_argument(
         "--trace-level",
@@ -121,10 +121,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _needle_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert OpenAI-style function tools to Needle's compact tool schema."""
+    normalized = []
+    for tool in tools:
+        function = tool.get("function") if tool.get("type") == "function" else None
+        normalized.append(function if isinstance(function, dict) else tool)
+    return normalized
+
+
 def _default_prompt() -> str:
-    """Build the default model prompt from BASE_CASE's user prompt and tools."""
-    tools = json.dumps(BASE_CASE.tools, ensure_ascii=False, indent=2)
-    return f"{BASE_CASE.prompt}\n\nTools:\n{tools}"
+    """Build the default prompt using the same <tools> JSON format as tool_eval."""
+    tools_json = json.dumps(_needle_tools(BASE_CASE.tools), separators=(",", ":"), ensure_ascii=False)
+    return (
+        "<|im_start|>user\n"
+        f"<tools>{tools_json}</tools>\n"
+        f"{BASE_CASE.prompt}<|im_end|>\n"
+        "<|im_start|>assistant\n"
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
