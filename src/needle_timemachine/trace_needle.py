@@ -91,8 +91,16 @@ def write_trace(path: Path, tracer: Tracer, *, checkpoint: str, prompt: str, con
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Trace a real Needle checkpoint.")
-    parser.add_argument("--checkpoint", required=True, help="Needle checkpoint path")
-    parser.add_argument("--needle-source", required=True, help="Local cactus-compute/needle checkout")
+    parser.add_argument(
+        "--checkpoint",
+        default="needle2.pkl",
+        help="Needle checkpoint path (default: ./needle2.pkl)",
+    )
+    parser.add_argument(
+        "--needle-source",
+        default="needle",
+        help="Local cactus-compute/needle checkout (default: ./needle)",
+    )
     parser.add_argument("--prompt", help="Prompt to tokenize (defaults to cases.py BASE_CASE prompt and tools)")
     parser.add_argument("--output", default="traces/run.json", help="Output trace JSON path")
     parser.add_argument(
