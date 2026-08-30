@@ -9,6 +9,7 @@ from typing import Any
 
 import numpy as np
 
+from .cases import BASE_CASE
 from .needle_runtime import load_needle_checkpoint
 from .trace import Tracer
 
@@ -92,7 +93,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Trace a real Needle checkpoint.")
     parser.add_argument("--checkpoint", required=True, help="Needle checkpoint path")
     parser.add_argument("--needle-source", required=True, help="Local cactus-compute/needle checkout")
-    parser.add_argument("--prompt", required=True, help="Prompt to tokenize")
+    parser.add_argument("--prompt", help="Prompt to tokenize (defaults to cases.py BASE_CASE prompt)")
     parser.add_argument("--output", default="traces/run.json", help="Output trace JSON path")
     parser.add_argument(
         "--trace-level",
@@ -111,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     if args.top_k < 1:
         raise ValueError("--top-k must be >= 1")
+    prompt = args.prompt if args.prompt is not None else BASE_CASE.prompt
     tracer = Tracer()
     runtime = load_needle_checkpoint(
         args.checkpoint,
@@ -118,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
         tracer=tracer,
         trace_level=args.trace_level,
     )
-    token_ids = [runtime.tokenizer.bos_token_id] + runtime.tokenizer.encode(args.prompt)
+    token_ids = [runtime.tokenizer.bos_token_id] + runtime.tokenizer.encode(prompt)
     if len(token_ids) > runtime.config.max_seq_len:
         raise ValueError(
             f"Prompt token count {len(token_ids)} exceeds max_seq_len={runtime.config.max_seq_len}"
@@ -144,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
         Path(args.output),
         tracer,
         checkpoint=str(args.checkpoint),
-        prompt=args.prompt,
+        prompt=prompt,
         config=runtime.config,
     )
 
