@@ -12,40 +12,15 @@ import json
 import os
 import re
 import time
-from dataclasses import asdict, dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional
+from .cases import EvalCase, _tool, BASE_CASE
 
 
-@dataclass
-class EvalCase:
-    id: str
-    title: str
-    category: str
-    prompt: str
-    tools: List[Dict[str, Any]]
-    expected_tool: Optional[str]
-    expected_args: Dict[str, Any] = field(default_factory=dict)
-    must_not_call: bool = False
-    rubric: str = ""
-
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
-
-
-def _tool(name: str, description: str, properties: Dict[str, Any], required: List[str]) -> Dict[str, Any]:
-    return {"type": "function", "function": {"name": name, "description": description,
-            "parameters": {"type": "object", "properties": properties, "required": required,
-                           "additionalProperties": False}}}
 
 
 CASES = [
-    EvalCase("exact", "精确调用与参数类型", "基础选择", "turn brightness to 0 in room 1",
-             [_tool("set_lights", "set brightness",
-                    {"room": {"type": "string"},
-                     "brightness": {"type": "integer", "minimum": 0, "maximum": 100}},
-                    ["room", "brightness"])],
-             "set_lights", {"room": "1", "brightness": 0}, rubric="应调用 set_lights 并正确填写房间与亮度参数。"),
+    BASE_CASE,
     EvalCase("disambiguate", "相似工具消歧", "选择边界", "查一下订单 A-1042 现在到哪了，不要取消订单。",
              [_tool("get_order_status", "查询订单物流和处理状态。", {"order_id": {"type": "string"}}, ["order_id"]), _tool("cancel_order", "取消尚未发货的订单。", {"order_id": {"type": "string"}, "reason": {"type": "string"}}, ["order_id", "reason"])],
              "get_order_status", {"order_id": "A-1042"}, rubric="明确的否定约束不能被忽略或触发副作用工具。"),
