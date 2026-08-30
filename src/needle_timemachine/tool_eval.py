@@ -40,8 +40,8 @@ def _tool(name: str, description: str, properties: Dict[str, Any], required: Lis
 
 
 CASES = [
-    EvalCase("exact", "精确调用与参数类型", "基础选择", "调用 set_lights, 房间 1, 亮度 0",
-             [_tool("set_lights", "调节灯光",
+    EvalCase("exact", "精确调用与参数类型", "基础选择", "turn brightness to 0 in room 1",
+             [_tool("set_lights", "set brightness",
                     {"room": {"type": "string"},
                      "brightness": {"type": "integer", "minimum": 0, "maximum": 100}},
                     ["room", "brightness"])],
