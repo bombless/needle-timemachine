@@ -1,7 +1,7 @@
 """Browser-side WebGPU comparison harness for Needle WebUI.
 
-The actual inference remains bombless/needle-webui in the browser.  This
-module only proxies its Vite page, exposes Runtime from webgpu-main.ts, and
+The actual inference remains bombless/needle-webui in the browser. This module
+only proxies its Vite page, exposes Runtime from webgpu-main.ts, and
 instruments Runtime.mm after the module has loaded.
 """
 
@@ -54,7 +54,7 @@ _OVERLAY = r'''<script>
 })();
 </script>'''
 
-_RUNTIME_EXPORT = r'''\n;globalThis.__needleWebUI={Model,Runtime,generate,topCandidates};\n'''
+_RUNTIME_EXPORT = r''';globalThis.__needleWebUI={Model,Runtime,generate,topCandidates};'''
 
 
 def _proxy_request(base: str, path: str) -> tuple[int, dict[str, str], bytes]:
@@ -76,7 +76,12 @@ def serve_webui_compare(*, webui_url: str, host: str, port: int, output: Path, r
 
     class Handler(BaseHTTPRequestHandler):
         def _send(self, status: int, content_type: str, body: bytes) -> None:
-            self.send_response(status);self.send_header("Content-Type",content_type);self.send_header("Cache-Control","no-store");self.send_header("Content-Length",str(len(body)));self.end_headers();self.wfile.write(body)
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
         def do_GET(self) -> None:  # noqa: N802
             parsed=urllib.parse.urlsplit(self.path)
@@ -85,11 +90,11 @@ def serve_webui_compare(*, webui_url: str, host: str, port: int, output: Path, r
                 else:self._send(200,"application/json; charset=utf-8",reference_payload)
                 return
             status,headers,body=_proxy_request(webui_url,parsed.path+("?"+parsed.query if parsed.query else ""))
-            if status>=400:self._send(status,headers.get("Content-Type","text/plain; charset=utf-8"),body);return
+            if status>=400:
+                self._send(status,headers.get("Content-Type","text/plain; charset=utf-8"),body);return
             ctype=headers.get("Content-Type","application/octet-stream")
             if parsed.path.endswith("/webgpu-main.ts") or parsed.path.endswith("/webgpu-main.js"):
-                body += _RUNTIME_EXPORT.encode("utf-8")
-                ctype="text/javascript; charset=utf-8"
+                body += _RUNTIME_EXPORT.encode("utf-8");ctype="text/javascript; charset=utf-8"
             if "text/html" in ctype:
                 text=body.decode("utf-8",errors="replace")
                 marker='<script>history.replaceState(null,"",location.pathname+"?DEBUG_LATENTS=1")</script>'
@@ -98,10 +103,15 @@ def serve_webui_compare(*, webui_url: str, host: str, port: int, output: Path, r
             self._send(status,ctype,body)
 
         def do_POST(self) -> None:  # noqa: N802
-            if urllib.parse.urlsplit(self.path).path!="/__timemachine__/webgpu-trace":self._send(404,"text/plain; charset=utf-8",b"not found");return
+            if urllib.parse.urlsplit(self.path).path!="/__timemachine__/webgpu-trace":
+                self._send(404,"text/plain; charset=utf-8",b"not found");return
             try:
-                length=int(self.headers.get("Content-Length","0"));payload=json.loads(self.rfile.read(length).decode("utf-8"));output.write_text(json.dumps(payload,ensure_ascii=False,indent=2),encoding="utf-8");self._send(200,"application/json; charset=utf-8",json.dumps({"ok":True,"message":f"saved {output}"}).encode())
-            except Exception as exc:self._send(400,"application/json; charset=utf-8",json.dumps({"ok":False,"error":str(exc)}).encode())
+                length=int(self.headers.get("Content-Length","0"))
+                payload=json.loads(self.rfile.read(length).decode("utf-8"))
+                output.write_text(json.dumps(payload,ensure_ascii=False,indent=2),encoding="utf-8")
+                self._send(200,"application/json; charset=utf-8",json.dumps({"ok":True,"message":f"saved {output}"}).encode())
+            except Exception as exc:
+                self._send(400,"application/json; charset=utf-8",json.dumps({"ok":False,"error":str(exc)}).encode())
 
         def log_message(self, fmt: str, *args: Any) -> None:return
 
