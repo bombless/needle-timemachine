@@ -20,209 +20,111 @@ DEFAULT_NEEDLE_SOURCE = PROJECT_ROOT / "needle"
 
 
 def _jsonable(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {str(k): _jsonable(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_jsonable(v) for v in value]
-    if isinstance(value, np.generic):
-        return value.item()
+    if isinstance(value, dict): return {str(k): _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)): return [_jsonable(v) for v in value]
+    if isinstance(value, np.generic): return value.item()
     if hasattr(value, "item"):
-        try:
-            return value.item()
-        except (TypeError, ValueError):
-            pass
+        try: return value.item()
+        except (TypeError, ValueError): pass
     return str(value)
 
 
 def _find_logits(value: Any) -> np.ndarray:
-    """Find the logits array in Needle's forward return value."""
-    if hasattr(value, "shape") and hasattr(value, "dtype"):
-        return np.asarray(value)
+    if hasattr(value, "shape") and hasattr(value, "dtype"): return np.asarray(value)
     if isinstance(value, (list, tuple)):
-        arrays = []
+        arrays=[]
         for item in value:
-            try:
-                arrays.append(_find_logits(item))
-            except TypeError:
-                continue
+            try: arrays.append(_find_logits(item))
+            except TypeError: continue
         if arrays:
             for array in arrays:
-                if array.ndim >= 2:
-                    return array
+                if array.ndim >= 2: return array
             return arrays[0]
     raise TypeError(f"Could not find logits array in model output of type {type(value)!r}")
 
 
 def _top_k_probabilities(logits: Any, top_k: int, tokenizer: Any) -> list[dict[str, Any]]:
-    array = _find_logits(logits)
-    if array.ndim < 2:
-        raise ValueError(f"Expected logits with at least 2 dimensions, got {array.shape}")
-    final_logits = np.asarray(array[0, -1], dtype=np.float64)
-    shifted = final_logits - np.max(final_logits)
-    exp = np.exp(shifted)
-    probabilities = exp / np.sum(exp)
-    k = min(max(1, int(top_k)), probabilities.size)
-    indices = np.argpartition(probabilities, -k)[-k:]
-    indices = indices[np.argsort(probabilities[indices])[::-1]]
-
-    results = []
+    array=_find_logits(logits)
+    if array.ndim < 2: raise ValueError(f"Expected logits with at least 2 dimensions, got {array.shape}")
+    final_logits=np.asarray(array[0,-1],dtype=np.float64);shifted=final_logits-np.max(final_logits);exp=np.exp(shifted);probabilities=exp/np.sum(exp)
+    k=min(max(1,int(top_k)),probabilities.size);indices=np.argpartition(probabilities,-k)[-k:];indices=indices[np.argsort(probabilities[indices])[::-1]]
+    results=[]
     for index in indices:
-        token_id = int(index)
-        try:
-            token_text = tokenizer.decode([token_id])
-        except Exception:
-            token_text = ""
-        token_bytes_hex = token_text.encode("utf-8").hex(" ")
-        results.append({
-            "token_id": token_id,
-            "token_text": token_text,
-            "token_bytes_hex": token_bytes_hex,
-            "probability": float(probabilities[index]),
-        })
+        token_id=int(index)
+        try: token_text=tokenizer.decode([token_id])
+        except Exception: token_text=""
+        results.append({"token_id":token_id,"token_text":token_text,"token_bytes_hex":token_text.encode("utf-8").hex(" "),"probability":float(probabilities[index])})
     return results
 
 
 def _prompt_token_list(token_ids: list[int], tokenizer: Any) -> list[dict[str, Any]]:
-    """Build a list of token dicts for the prompt (including BOS)."""
-    results = []
+    results=[]
     for token_id in token_ids:
-        try:
-            token_text = tokenizer.decode([token_id])
-        except Exception:
-            token_text = ""
-        token_bytes_hex = token_text.encode("utf-8").hex(" ")
-        results.append({
-            "token_id": token_id,
-            "token_text": token_text,
-            "token_bytes_hex": token_bytes_hex,
-        })
+        try: token_text=tokenizer.decode([token_id])
+        except Exception: token_text=""
+        results.append({"token_id":token_id,"token_text":token_text,"token_bytes_hex":token_text.encode("utf-8").hex(" ")})
     return results
 
 
-def write_trace(
-    path: Path,
-    tracer: Tracer,
-    *,
-    checkpoint: str,
-    prompt: str,
-    config: Any,
-    token_ids: list[int] | None = None,
-    tokenizer: Any = None,
-) -> None:
-    prompt_tokens = _prompt_token_list(token_ids, tokenizer) if token_ids and tokenizer else []
-    payload = {
-        "format": "needle-timemachine.trace/v1",
-        "checkpoint": checkpoint,
-        "prompt": prompt,
-        "prompt_tokens": prompt_tokens,
-        "config": _jsonable(vars(config)) if hasattr(config, "__dict__") else str(config),
-        "events": [event.to_dict() for event in tracer.events],
-    }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+def write_trace(path: Path, tracer: Tracer, *, checkpoint: str, prompt: str, config: Any, token_ids: list[int] | None = None, tokenizer: Any = None) -> None:
+    prompt_tokens=_prompt_token_list(token_ids,tokenizer) if token_ids and tokenizer else []
+    payload={"format":"needle-timemachine.trace/v1","checkpoint":checkpoint,"prompt":prompt,"prompt_tokens":prompt_tokens,"config":_jsonable(vars(config)) if hasattr(config,"__dict__") else str(config),"events":[event.to_dict() for event in tracer.events]}
+    path.parent.mkdir(parents=True,exist_ok=True);path.write_text(json.dumps(payload,indent=2,ensure_ascii=False),encoding="utf-8")
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Trace a real Needle checkpoint.")
-    parser.add_argument(
-        "--checkpoint",
-        default=str(DEFAULT_CHECKPOINT),
-        help=f"Needle checkpoint path (default: {DEFAULT_CHECKPOINT})",
-    )
-    parser.add_argument(
-        "--needle-source",
-        default=str(DEFAULT_NEEDLE_SOURCE),
-        help=f"Local cactus-compute/needle checkout (default: {DEFAULT_NEEDLE_SOURCE})",
-    )
-    parser.add_argument("--prompt", help="Prompt to tokenize (defaults to cases.py BASE_CASE prompt and tools")
-    parser.add_argument("--output", default="traces/run.json", help="Output trace JSON path")
-    parser.add_argument(
-        "--trace-level",
-        choices=("none", "layer", "op"),
-        default="layer",
-        help="layer records hidden states; op records runtime attention/MLP values",
-    )
-    parser.add_argument("--top-k", type=int, default=5, help="Number of final-token probabilities to show in the UI")
-    parser.add_argument("--serve", action="store_true", help="Serve the trace in the local timeline UI")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8765)
+    parser=argparse.ArgumentParser(description="Trace Needle 2, or compare the real browser WebGPU implementation.")
+    parser.add_argument("--checkpoint",default=str(DEFAULT_CHECKPOINT),help=f"Needle checkpoint path (default: {DEFAULT_CHECKPOINT})")
+    parser.add_argument("--needle-source",default=str(DEFAULT_NEEDLE_SOURCE),help=f"Local cactus-compute/needle checkout (default: {DEFAULT_NEEDLE_SOURCE})")
+    parser.add_argument("--prompt",help="Prompt to tokenize (defaults to cases.py BASE_CASE prompt and tools)")
+    parser.add_argument("--output",default="traces/run.json",help="Output Python trace JSON path")
+    parser.add_argument("--trace-level",choices=("none","layer","op"),default="layer",help="layer records hidden states; op records runtime attention/MLP values")
+    parser.add_argument("--top-k",type=int,default=5,help="Number of final-token probabilities to show in the UI")
+    parser.add_argument("--serve",action="store_true",help="Serve the Python trace in the local timeline UI")
+    parser.add_argument("--webgpu-compare",action="store_true",help="Serve a same-origin proxy of bombless/needle-webui and instrument its real browser WebGPU execution")
+    parser.add_argument("--webui-url",default="http://127.0.0.1:5173",help="Running needle-webui Vite URL used by --webgpu-compare")
+    parser.add_argument("--webgpu-output",default="traces/webgpu.json",help="Browser WebGPU trace output")
+    parser.add_argument("--reference",type=Path,help="Optional Python trace to expose beside the browser trace")
+    parser.add_argument("--host",default="127.0.0.1")
+    parser.add_argument("--port",type=int,default=8765)
     return parser
 
 
 def _needle_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Convert OpenAI-style function tools to Needle's compact tool schema."""
-    normalized = []
+    normalized=[]
     for tool in tools:
-        function = tool.get("function") if tool.get("type") == "function" else None
-        normalized.append(function if isinstance(function, dict) else tool)
+        function=tool.get("function") if tool.get("type")=="function" else None
+        normalized.append(function if isinstance(function,dict) else tool)
     return normalized
 
 
 def _default_prompt() -> str:
-    """Build the default prompt using the same <tools> JSON format as tool_eval."""
-    tools_json = json.dumps(_needle_tools(BASE_CASE.tools), separators=(",", ":"), ensure_ascii=False)
-    return (
-        "<|im_start|>user\n"
-        f"<tools>{tools_json}</tools>\n"
-        f"{BASE_CASE.prompt}<|im_end|>\n"
-        "<|im_start|>assistant\n"
-    )
+    tools_json=json.dumps(_needle_tools(BASE_CASE.tools),separators=(",",":"),ensure_ascii=False)
+    return "<|im_start|>user\n" f"<tools>{tools_json}</tools>\n" f"{BASE_CASE.prompt}<|im_end|>\n" "<|im_start|>assistant\n"
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_arg_parser().parse_args(argv)
-    if args.top_k < 1:
-        raise ValueError("--top-k must be >= 1")
-    prompt = args.prompt if args.prompt is not None else _default_prompt()
-    tracer = Tracer()
-    runtime = load_needle_checkpoint(
-        args.checkpoint,
-        needle_source=args.needle_source,
-        tracer=tracer,
-        trace_level=args.trace_level,
-    )
-    token_ids = [runtime.tokenizer.bos_token_id] + runtime.tokenizer.encode(prompt)
-    if len(token_ids) > runtime.config.max_seq_len:
-        raise ValueError(
-            f"Prompt token count {len(token_ids)} exceeds max_seq_len={runtime.config.max_seq_len}"
-        )
-
-    tokens = np.asarray([token_ids], dtype=np.int32)
-    print("Needle Time Machine")
-    print("-------------------")
-    print(f"tokens:     {len(token_ids)}")
-    print(f"trace:      {args.trace_level}")
-    print(f"top-k:      {args.top_k}")
-    print(f"checkpoint: {args.checkpoint}")
-
-    runtime.hidden_states(tokens)
-    logits = runtime.logits(tokens)
-    top_k = _top_k_probabilities(logits, args.top_k, runtime.tokenizer)
-    tracer.emit(
-        "probability_output",
-        name="model.output.probabilities",
-        metadata={"top_k": top_k, "position": "final", "source": "logits"},
-    )
-    write_trace(
-        Path(args.output),
-        tracer,
-        checkpoint=str(args.checkpoint),
-        prompt=prompt,
-        config=runtime.config,
-        token_ids=token_ids,
-        tokenizer=runtime.tokenizer,
-    )
-
-    layer_events = [e for e in tracer.events if e.op == "layer_output"]
-    runtime_events = [e for e in tracer.events if e.metadata.get("runtime")]
-    print(f"layers:     {len(layer_events)}")
-    print(f"runtime:    {len(runtime_events)}")
-    print(f"events:     {len(tracer.events)}")
-    print(f"saved:      {args.output}")
-
+    args=build_arg_parser().parse_args(argv)
+    if args.webgpu_compare:
+        from .webgpu_compare import serve_webui_compare
+        serve_webui_compare(webui_url=args.webui_url,host=args.host,port=args.port,output=Path(args.webgpu_output),reference=args.reference)
+        return 0
+    if args.top_k < 1: raise ValueError("--top-k must be >= 1")
+    prompt=args.prompt if args.prompt is not None else _default_prompt()
+    tracer=Tracer()
+    runtime=load_needle_checkpoint(args.checkpoint,needle_source=args.needle_source,tracer=tracer,trace_level=args.trace_level)
+    token_ids=[runtime.tokenizer.bos_token_id]+runtime.tokenizer.encode(prompt)
+    if len(token_ids)>runtime.config.max_seq_len: raise ValueError(f"Prompt token count {len(token_ids)} exceeds max_seq_len={runtime.config.max_seq_len}")
+    tokens=np.asarray([token_ids],dtype=np.int32)
+    print("Needle Time Machine");print("-------------------");print(f"tokens:     {len(token_ids)}");print(f"trace:      {args.trace_level}");print(f"top-k:      {args.top_k}");print(f"checkpoint: {args.checkpoint}")
+    runtime.hidden_states(tokens);logits=runtime.logits(tokens);top_k=_top_k_probabilities(logits,args.top_k,runtime.tokenizer)
+    tracer.emit("probability_output",name="model.output.probabilities",metadata={"top_k":top_k,"position":"final","source":"logits"})
+    write_trace(Path(args.output),tracer,checkpoint=str(args.checkpoint),prompt=prompt,config=runtime.config,token_ids=token_ids,tokenizer=runtime.tokenizer)
+    layer_events=[e for e in tracer.events if e.op=="layer_output"];runtime_events=[e for e in tracer.events if e.metadata.get("runtime")]
+    print(f"layers:     {len(layer_events)}");print(f"runtime:    {len(runtime_events)}");print(f"events:     {len(tracer.events)}");print(f"saved:      {args.output}")
     if args.serve:
         from .ui import serve
-        serve(Path(args.output), args.host, args.port)
+        serve(Path(args.output),args.host,args.port)
     return 0
 
 
