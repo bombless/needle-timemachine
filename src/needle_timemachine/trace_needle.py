@@ -17,6 +17,7 @@ from .trace import Tracer
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CHECKPOINT = PROJECT_ROOT / "needle2.pkl"
 DEFAULT_NEEDLE_SOURCE = PROJECT_ROOT / "needle"
+DEFAULT_WEBUI_SOURCE = PROJECT_ROOT.parent / "needle-webui"
 
 
 def _jsonable(value: Any) -> Any:
@@ -123,7 +124,7 @@ def write_trace(
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Trace a real Needle checkpoint.")
+    parser = argparse.ArgumentParser(description="Trace a real Needle checkpoint and optionally compare its WebGPU port.")
     parser.add_argument(
         "--checkpoint",
         default=str(DEFAULT_CHECKPOINT),
@@ -134,7 +135,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=str(DEFAULT_NEEDLE_SOURCE),
         help=f"Local cactus-compute/needle checkout (default: {DEFAULT_NEEDLE_SOURCE})",
     )
-    parser.add_argument("--prompt", help="Prompt to tokenize (defaults to cases.py BASE_CASE prompt and tools")
+    parser.add_argument("--prompt", help="Prompt to tokenize (defaults to cases.py BASE_CASE prompt and tools)")
     parser.add_argument("--output", default="traces/run.json", help="Output trace JSON path")
     parser.add_argument(
         "--trace-level",
@@ -146,6 +147,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--serve", action="store_true", help="Serve the trace in the local timeline UI")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument(
+        "--webgpu-compare",
+        action="store_true",
+        help="After producing the trace, launch a browser page that runs the exact needle-webui TypeScript engine through Vite and compares GEMM boundaries.",
+    )
+    parser.add_argument(
+        "--webui-source",
+        default=str(DEFAULT_WEBUI_SOURCE),
+        help=f"needle-webui checkout containing src/engine.ts (default: {DEFAULT_WEBUI_SOURCE})",
+    )
+    parser.add_argument(
+        "--cact-model",
+        help="Path to the .cact model used by needle-webui. Required with --webgpu-compare.",
+    )
     return parser
 
 
@@ -173,6 +188,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     if args.top_k < 1:
         raise ValueError("--top-k must be >= 1")
+    if args.webgpu_compare and not args.cact_model:
+        raise ValueError("--cact-model is required with --webgpu-compare")
     prompt = args.prompt if args.prompt is not None else _default_prompt()
     tracer = Tracer()
     runtime = load_needle_checkpoint(
@@ -203,8 +220,9 @@ def main(argv: list[str] | None = None) -> int:
         name="model.output.probabilities",
         metadata={"top_k": top_k, "position": "final", "source": "logits"},
     )
+    output_path = Path(args.output)
     write_trace(
-        Path(args.output),
+        output_path,
         tracer,
         checkpoint=str(args.checkpoint),
         prompt=prompt,
@@ -218,11 +236,19 @@ def main(argv: list[str] | None = None) -> int:
     print(f"layers:     {len(layer_events)}")
     print(f"runtime:    {len(runtime_events)}")
     print(f"events:     {len(tracer.events)}")
-    print(f"saved:      {args.output}")
+    print(f"saved:      {output_path}")
 
-    if args.serve:
+    if args.webgpu_compare:
+        from .webgpu_compare import serve as serve_webgpu_compare
+        serve_webgpu_compare(
+            output_path,
+            Path(args.webui_source),
+            args.host,
+            args.port,
+        )
+    elif args.serve:
         from .ui import serve
-        serve(Path(args.output), args.host, args.port)
+        serve(output_path, args.host, args.port)
     return 0
 
 
