@@ -82,11 +82,39 @@ def _top_k_probabilities(logits: Any, top_k: int, tokenizer: Any) -> list[dict[s
     return results
 
 
-def write_trace(path: Path, tracer: Tracer, *, checkpoint: str, prompt: str, config: Any) -> None:
+def _prompt_token_list(token_ids: list[int], tokenizer: Any) -> list[dict[str, Any]]:
+    """Build a list of token dicts for the prompt (including BOS)."""
+    results = []
+    for token_id in token_ids:
+        try:
+            token_text = tokenizer.decode([token_id])
+        except Exception:
+            token_text = ""
+        token_bytes_hex = token_text.encode("utf-8").hex(" ")
+        results.append({
+            "token_id": token_id,
+            "token_text": token_text,
+            "token_bytes_hex": token_bytes_hex,
+        })
+    return results
+
+
+def write_trace(
+    path: Path,
+    tracer: Tracer,
+    *,
+    checkpoint: str,
+    prompt: str,
+    config: Any,
+    token_ids: list[int] | None = None,
+    tokenizer: Any = None,
+) -> None:
+    prompt_tokens = _prompt_token_list(token_ids, tokenizer) if token_ids and tokenizer else []
     payload = {
         "format": "needle-timemachine.trace/v1",
         "checkpoint": checkpoint,
         "prompt": prompt,
+        "prompt_tokens": prompt_tokens,
         "config": _jsonable(vars(config)) if hasattr(config, "__dict__") else str(config),
         "events": [event.to_dict() for event in tracer.events],
     }
@@ -181,6 +209,8 @@ def main(argv: list[str] | None = None) -> int:
         checkpoint=str(args.checkpoint),
         prompt=prompt,
         config=runtime.config,
+        token_ids=token_ids,
+        tokenizer=runtime.tokenizer,
     )
 
     layer_events = [e for e in tracer.events if e.op == "layer_output"]
