@@ -44,10 +44,12 @@ def _write_vite_project(root: Path, engine_path: Path, reference_trace: Path) ->
     (root / "index.html").write_text(_HTML.replace("WEBUI_ENGINE@", engine_path.resolve().as_posix()), encoding="utf-8")
     (root / "package.json").write_text('{"private":true,"type":"module"}\n', encoding="utf-8")
     ref = str(reference_trace.resolve()).replace("\\", "\\\\").replace('"', '\\"')
+    engine_root = str(engine_path.parent.parent.resolve()).replace("\\", "\\\\").replace('"', '\\"')
+    root_text = str(root.resolve()).replace("\\", "\\\\").replace('"', '\\"')
     (root / "vite.config.js").write_text(
         'import { defineConfig } from "vite"\n'
         'import fs from "node:fs"\n'
-        f'export default defineConfig({{plugins:[{{name:"tm-reference",configureServer(s){{s.middlewares.use("/reference.json",(_,res)=>{{const b=fs.readFileSync("{ref}");res.setHeader("Content-Type","application/json");res.end(b)}})}}}}]}})\n',
+        f'export default defineConfig({{server:{{fs:{{allow:["{root_text}","{engine_root}"]}}}},plugins:[{{name:"tm-reference",configureServer(s){{s.middlewares.use("/reference.json",(_,res)=>{{const b=fs.readFileSync("{ref}");res.setHeader("Content-Type","application/json");res.end(b)}})}}}}]}})\n',
         encoding="utf-8",
     )
 
@@ -70,11 +72,7 @@ def serve(reference_trace: Path, webui_source: Path, host: str, port: int) -> No
     print(f"Needle WebGPU comparator: http://{host}:{port}/")
     print(f"reference: {reference_trace}")
     print(f"webui engine: {engine_path}")
-    proc = subprocess.Popen(
-        [str(vite), "--host", host, "--port", str(port), "--strictPort"],
-        cwd=temp,
-        env=os.environ.copy(),
-    )
+    proc = subprocess.Popen([str(vite), "--host", host, "--port", str(port), "--strictPort"], cwd=temp, env=os.environ.copy())
     try:
         proc.wait()
     finally:
