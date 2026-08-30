@@ -30,11 +30,12 @@ button,input{font:inherit}button{padding:8px 12px;border:1px solid #cbd2df;borde
 <div class="card"><div class="bar"><button id="first">|&lt;</button><button id="prev">&lt;</button><button id="play">▶ Play</button><button id="next">&gt;</button><button id="last">&gt;|</button><label class="speed">speed <input id="speed" type="range" min="0.25" max="4" step="0.25" value="1"><span id="speedText">1×</span></label></div>
 <input id="slider" type="range" min="0" max="0" value="0"><div class="timeline"><div class="track" id="track"></div></div></div>
 <div class="grid"><section class="card"><h2 id="title">No event</h2><div id="details" class="kv"></div></section><section class="card"><h2>Tensor metadata</h2><pre id="tensors">{}</pre><h2>Event metadata</h2><pre id="metadata">{}</pre></section></div>
+<section class="card"><div class="bar"><h2 style="margin:0">Prompt tokens</h2><span id="promptTokenSummary" class="muted"></span></div><div id="promptTokens"><p class="probability-empty">No prompt tokens recorded.</p></div></section>
 <section class="card"><div class="bar"><h2 style="margin:0">Final token probabilities</h2><span id="probabilitySummary" class="muted"></span></div><div id="probabilities"><p class="probability-empty">No probability output recorded.</p></div></section>
 </main><script>
 let trace={events:[]}, pos=0, timer=null;
 const $=id=>document.getElementById(id);
-async function load(){trace=await (await fetch('/trace.json')).json();$('summary').textContent=`${trace.events.length} events · ${trace.checkpoint||'unknown checkpoint'}`;$('slider').max=Math.max(0,trace.events.length-1);drawDots();render(0)}
+async function load(){trace=await (await fetch('/trace.json')).json();$('summary').textContent=`${trace.events.length} events · ${trace.checkpoint||'unknown checkpoint'}`;$('slider').max=Math.max(0,trace.events.length-1);drawDots();renderPromptTokens();render(0)}
 function drawDots(){const t=$('track');trace.events.forEach((e,i)=>{const d=document.createElement('button');d.className='dot'+(e.op==='layer_output'?' layer':'');d.title=`${e.step}: ${e.op}`;d.style.left=(trace.events.length<2?50:i*100/(trace.events.length-1))+'%';d.onclick=()=>render(i);t.appendChild(d)})}
 function escapeHtml(value){return String(value??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;')}
 function renderProbabilities(event){
@@ -48,6 +49,16 @@ function renderProbabilities(event){
     const tokenText=escapeHtml(item.token_text||'');
     const tokenHex=escapeHtml(item.token_bytes_hex||'');
     return `<tr><td>${index+1}</td><td><code>${escapeHtml(item.token_id)}</code></td><td class="token-text">${tokenText||'∅'}</td><td class="token-hex"><code>${tokenHex||'∅'}</code></td><td class="probability-value">${pct}%</td><td><div class="probability-bar"><div class="probability-fill" style="width:${Math.max(0,Math.min(100,p*100))}%"></div></div></td></tr>`;
+  }).join('')+'</tbody></table>';
+}
+function renderPromptTokens(){
+  const tokens=trace.prompt_tokens;
+  if(!tokens||!tokens.length){$('promptTokens').innerHTML='<p class="probability-empty">No prompt tokens recorded.</p>';$('promptTokenSummary').textContent='';return}
+  $('promptTokenSummary').textContent=`${tokens.length} tokens`;
+  $('promptTokens').innerHTML='<table class="probability-table"><thead><tr><th>#</th><th>Token ID</th><th>Token 文本</th><th>Token bytes hex</th></tr></thead><tbody>'+tokens.map((item,index)=>{
+    const tokenText=escapeHtml(item.token_text||'');
+    const tokenHex=escapeHtml(item.token_bytes_hex||'');
+    return `<tr><td>${index+1}</td><td><code>${escapeHtml(item.token_id)}</code></td><td class="token-text">${tokenText||'∅'}</td><td class="token-hex"><code>${tokenHex||'∅'}</code></td></tr>`;
   }).join('')+'</tbody></table>';
 }
 function render(i){if(!trace.events.length)return;pos=Math.max(0,Math.min(i,trace.events.length-1));const e=trace.events[pos];$('slider').value=pos;$('title').textContent=`Step ${e.step} · ${e.op}`;const rows=[['layer',e.layer??'—'],['name',e.name??'—'],['phase',e.phase],['snapshot',e.snapshot_id??'—']];$('details').innerHTML=rows.map(([k,v])=>`<div class="muted">${k}</div><div>${v}</div>`).join('');$('tensors').textContent=JSON.stringify(e.tensors||{},null,2);$('metadata').textContent=JSON.stringify(e.metadata||{},null,2);renderProbabilities(e);document.querySelectorAll('.dot').forEach((d,j)=>d.classList.toggle('current',j===pos))}
