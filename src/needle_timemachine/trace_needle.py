@@ -14,6 +14,11 @@ from .needle_runtime import load_needle_checkpoint
 from .trace import Tracer
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_CHECKPOINT = PROJECT_ROOT / "needle2.pkl"
+DEFAULT_NEEDLE_SOURCE = PROJECT_ROOT / "needle"
+
+
 def _jsonable(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(k): _jsonable(v) for k, v in value.items()}
@@ -93,13 +98,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Trace a real Needle checkpoint.")
     parser.add_argument(
         "--checkpoint",
-        default="needle2.pkl",
-        help="Needle checkpoint path (default: ./needle2.pkl)",
+        default=str(DEFAULT_CHECKPOINT),
+        help=f"Needle checkpoint path (default: {DEFAULT_CHECKPOINT})",
     )
     parser.add_argument(
         "--needle-source",
-        default="needle",
-        help="Local cactus-compute/needle checkout (default: ./needle)",
+        default=str(DEFAULT_NEEDLE_SOURCE),
+        help=f"Local cactus-compute/needle checkout (default: {DEFAULT_NEEDLE_SOURCE})",
     )
     parser.add_argument("--prompt", help="Prompt to tokenize (defaults to cases.py BASE_CASE prompt and tools)")
     parser.add_argument("--output", default="traces/run.json", help="Output trace JSON path")
