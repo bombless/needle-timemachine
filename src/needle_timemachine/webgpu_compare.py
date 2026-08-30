@@ -64,11 +64,14 @@ def serve(reference_trace: Path, webui_source: Path, host: str, port: int) -> No
 
     temp = Path(tempfile.mkdtemp(prefix="needle-webgpu-compare-"))
     _write_vite_project(temp, engine_path, reference_trace)
+    vite = webui_source / "node_modules" / ".bin" / ("vite.cmd" if os.name == "nt" else "vite")
+    if not vite.exists():
+        raise FileNotFoundError(f"Vite executable not found: {vite}; run npm install in needle-webui")
     print(f"Needle WebGPU comparator: http://{host}:{port}/")
     print(f"reference: {reference_trace}")
     print(f"webui engine: {engine_path}")
     proc = subprocess.Popen(
-        ["npx", "vite", "--host", host, "--port", str(port), "--strictPort"],
+        [str(vite), "--host", host, "--port", str(port), "--strictPort"],
         cwd=temp,
         env=os.environ.copy(),
     )
