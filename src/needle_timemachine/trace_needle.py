@@ -12,11 +12,66 @@ import numpy as np
 from .cases import BASE_CASE
 from .needle_runtime import load_needle_checkpoint
 from .trace import Tracer
+from .webgpu_runtime import CactModel, run_webgpu
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CHECKPOINT = PROJECT_ROOT / "needle2.pkl"
 DEFAULT_NEEDLE_SOURCE = PROJECT_ROOT / "needle"
+
+
+class _CactTokenizer:
+    """Tokenizer matching needle-webgpu's RAW SentencePiece dump."""
+    def __init__(self, data: bytes):
+        import struct
+        self.parts = []
+        self.scores = []
+        self.types = []
+        self.first = {}
+        count = struct.unpack_from('<I', data, 0)[0]
+        offset = 24
+        for index in range(count):
+            score = struct.unpack_from('<f', data, offset)[0]
+            kind = data[offset + 4]
+            size = struct.unpack_from('<H', data, offset + 5)[0]
+            offset += 7
+            part = data[offset:offset + size].decode('utf-8')
+            offset += size
+            self.parts.append(part)
+            self.scores.append(score)
+            self.types.append(kind)
+            self.first.setdefault(part[0], []).append(index)
+
+    def encode(self, text: str) -> list[int]:
+        chars = list('▁' + text.replace(' ', '▁'))
+        inf = 1e30
+        dp = [inf] * (len(chars) + 1); prev = [-1] * (len(chars) + 1); piece = [-1] * (len(chars) + 1)
+        dp[0] = 0
+        for i, char in enumerate(chars):
+            for index in self.first.get(char, []):
+                value = list(self.parts[index])
+                if chars[i:i + len(value)] == value and dp[i] - self.scores[index] < dp[i + len(value)]:
+                    dp[i + len(value)] = dp[i] - self.scores[index]; prev[i + len(value)] = i; piece[i + len(value)] = index
+            if dp[i + 1] >= inf:
+                for byte in char.encode('utf-8'):
+                    token = f'<0x{byte:02X}>'
+                    if token in self.parts:
+                        dp[i + 1] = dp[i] + 20; prev[i + 1] = i; piece[i + 1] = self.parts.index(token); break
+        result = []
+        i = len(chars)
+        while i > 0 and prev[i] < i:
+            result.append(piece[i]); i = prev[i]
+        return result[::-1]
+
+    def decode(self, ids: list[int]) -> str:
+        out = ''
+        for index in ids:
+            part = self.parts[index] if 0 <= index < len(self.parts) else ''
+            if self.types[index] == 4 and part.startswith('<0x'):
+                out += chr(int(part[3:5], 16))
+            else:
+                out += part
+        return out.replace('▁', ' ').strip()
 
 
 def _jsonable(value: Any) -> Any:
@@ -55,9 +110,12 @@ def _find_logits(value: Any) -> np.ndarray:
 
 def _top_k_probabilities(logits: Any, top_k: int, tokenizer: Any) -> list[dict[str, Any]]:
     array = _find_logits(logits)
-    if array.ndim < 2:
-        raise ValueError(f"Expected logits with at least 2 dimensions, got {array.shape}")
-    final_logits = np.asarray(array[0, -1], dtype=np.float64)
+    if array.ndim == 1:
+        final_logits = np.asarray(array, dtype=np.float64)
+    elif array.ndim >= 2:
+        final_logits = np.asarray(array[0, -1], dtype=np.float64)
+    else:
+        raise ValueError(f"Expected logits with at least 1 dimension, got {array.shape}")
     shifted = final_logits - np.max(final_logits)
     exp = np.exp(shifted)
     probabilities = exp / np.sum(exp)
@@ -115,7 +173,7 @@ def write_trace(
         "checkpoint": checkpoint,
         "prompt": prompt,
         "prompt_tokens": prompt_tokens,
-        "config": _jsonable(vars(config)) if hasattr(config, "__dict__") else str(config),
+        "config": _jsonable(vars(config)) if hasattr(config, "__dict__") else _jsonable(config),
         "events": [event.to_dict() for event in tracer.events],
     }
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -123,7 +181,9 @@ def write_trace(
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Trace a real Needle checkpoint.")
+    parser = argparse.ArgumentParser(description="Trace Needle JAX or needle-webgpu arithmetic.")
+    parser.add_argument("--backend", choices=("jax", "webgpu"), default="jax", help="inference path to reproduce")
+    parser.add_argument("--cact", help=".cact file required by --backend webgpu")
     parser.add_argument(
         "--checkpoint",
         default=str(DEFAULT_CHECKPOINT),
@@ -158,9 +218,11 @@ def _needle_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return normalized
 
 
-def _default_prompt() -> str:
-    """Build the default prompt using the same <tools> JSON format as tool_eval."""
+def _default_prompt(*, browser: bool = False) -> str:
+    """Build the default prompt; browser mode matches engine-finetune.ts exactly."""
     tools_json = json.dumps(_needle_tools(BASE_CASE.tools), separators=(",", ":"), ensure_ascii=False)
+    if browser:
+        return f"<|im_start|>user<tools>{tools_json}</tools>{BASE_CASE.prompt}<|im_end|><|im_start|>assistant"
     return (
         "<|im_start|>user\n"
         f"<tools>{tools_json}</tools>\n"
@@ -173,31 +235,40 @@ def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     if args.top_k < 1:
         raise ValueError("--top-k must be >= 1")
-    prompt = args.prompt if args.prompt is not None else _default_prompt()
+    prompt = args.prompt if args.prompt is not None else _default_prompt(browser=args.backend == "webgpu")
     tracer = Tracer()
-    runtime = load_needle_checkpoint(
-        args.checkpoint,
-        needle_source=args.needle_source,
-        tracer=tracer,
-        trace_level=args.trace_level,
-    )
-    token_ids = [runtime.tokenizer.bos_token_id] + runtime.tokenizer.encode(prompt)
-    if len(token_ids) > runtime.config.max_seq_len:
-        raise ValueError(
-            f"Prompt token count {len(token_ids)} exceeds max_seq_len={runtime.config.max_seq_len}"
-        )
+    runtime = None
+    cact = None
+    if args.backend == "webgpu":
+        if not args.cact:
+            raise ValueError("--cact is required with --backend webgpu")
+        cact = CactModel(args.cact)
+        tokenizer = _CactTokenizer(cact.tokenizer_bytes())
+        max_seq_len = cact.g["max_seq_len"]
+        token_ids = [2] + tokenizer.encode(prompt)
+    else:
+        runtime = load_needle_checkpoint(args.checkpoint, needle_source=args.needle_source, tracer=tracer, trace_level=args.trace_level)
+        tokenizer = runtime.tokenizer
+        max_seq_len = runtime.config.max_seq_len
+        token_ids = [runtime.tokenizer.bos_token_id] + runtime.tokenizer.encode(prompt)
+    if len(token_ids) > max_seq_len:
+        raise ValueError(f"Prompt token count {len(token_ids)} exceeds max_seq_len={max_seq_len}")
 
     tokens = np.asarray([token_ids], dtype=np.int32)
     print("Needle Time Machine")
     print("-------------------")
     print(f"tokens:     {len(token_ids)}")
     print(f"trace:      {args.trace_level}")
+    print(f"backend:    {args.backend}")
     print(f"top-k:      {args.top_k}")
-    print(f"checkpoint: {args.checkpoint}")
+    print(f"model:      {args.cact if args.backend == 'webgpu' else args.checkpoint}")
 
-    runtime.hidden_states(tokens)
-    logits = runtime.logits(tokens)
-    top_k = _top_k_probabilities(logits, args.top_k, runtime.tokenizer)
+    if args.backend == "webgpu":
+        logits = run_webgpu(cact, token_ids, tracer, trace_level=args.trace_level)
+    else:
+        runtime.hidden_states(tokens)
+        logits = runtime.logits(tokens)
+    top_k = _top_k_probabilities(logits, args.top_k, tokenizer)
     tracer.emit(
         "probability_output",
         name="model.output.probabilities",
@@ -206,11 +277,11 @@ def main(argv: list[str] | None = None) -> int:
     write_trace(
         Path(args.output),
         tracer,
-        checkpoint=str(args.checkpoint),
+        checkpoint=str(args.cact if args.backend == "webgpu" else args.checkpoint),
         prompt=prompt,
-        config=runtime.config,
+        config=(cact.g if args.backend == "webgpu" else runtime.config),
         token_ids=token_ids,
-        tokenizer=runtime.tokenizer,
+        tokenizer=tokenizer,
     )
 
     layer_events = [e for e in tracer.events if e.op == "layer_output"]
