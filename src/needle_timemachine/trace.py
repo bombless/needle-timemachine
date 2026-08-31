@@ -1,23 +1,17 @@
-"""Low-level instrumentation API.
-
-The tracer is intentionally framework-agnostic. It can be used around normal
-Python functions today and later wired into Needle's Flax modules. It never
-changes the returned value, which is important for numerical equivalence tests.
-"""
+"""Low-level instrumentation API."""
 
 from __future__ import annotations
 
+import base64
 import contextvars
 import math
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, Optional
 
-from .events import TensorInfo, TraceEvent
+from .events import TensorInfo, TensorPayload, TraceEvent
 from .snapshot import SnapshotStore
 
-_CURRENT: contextvars.ContextVar[Optional["Tracer"]] = contextvars.ContextVar(
-    "needle_timemachine_tracer", default=None
-)
+_CURRENT: contextvars.ContextVar[Optional["Tracer"]] = contextvars.ContextVar("needle_timemachine_tracer", default=None)
 
 
 def _tensor_info(value: Any, summarize: bool = True) -> Optional[TensorInfo]:
@@ -39,19 +33,29 @@ def _tensor_info(value: Any, summarize: bool = True) -> Optional[TensorInfo]:
             return TensorInfo(shape, dtype, nbytes=nbytes)
         finite = arr[np.isfinite(arr)] if np.issubdtype(arr.dtype, np.number) else arr
         if finite.size:
-            return TensorInfo(
-                shape, dtype, nbytes=nbytes,
-                min=float(np.min(finite)), max=float(np.max(finite)),
-                mean=float(np.mean(finite)),
-            )
+            return TensorInfo(shape, dtype, nbytes=nbytes, min=float(np.min(finite)),
+                              max=float(np.max(finite)), mean=float(np.mean(finite)))
     except (ImportError, TypeError, ValueError):
         pass
     return TensorInfo(shape, dtype, nbytes=nbytes)
 
 
-class Tracer:
-    """Collect execution events and optional snapshots."""
+def _payload(value: Any) -> Optional[TensorPayload]:
+    if not hasattr(value, "shape") or not hasattr(value, "dtype"):
+        return None
+    import numpy as np
+    arr = np.asarray(value, dtype=np.float32)
+    little = np.asarray(arr, dtype="<f4", order="C")
+    return TensorPayload(
+        shape=tuple(int(x) for x in little.shape), dtype=str(value.dtype),
+        encoding="base64-f32-le",
+        data=base64.b64encode(little.tobytes(order="C")).decode("ascii"),
+        sum=float(np.sum(little, dtype=np.float64)),
+        sum_squares=float(np.sum(little * little, dtype=np.float64)),
+    )
 
+
+class Tracer:
     def __init__(self, *, snapshot_store: Optional[SnapshotStore] = None,
                  snapshot_every: int = 0, summarize_tensors: bool = True):
         self.events = []
@@ -59,7 +63,6 @@ class Tracer:
         self.snapshot_every = snapshot_every
         self.summarize_tensors = summarize_tensors
         self._step = 0
-        self._token = None
 
     @property
     def step(self) -> int:
@@ -69,10 +72,9 @@ class Tracer:
         self.events.clear()
         self._step = 0
 
-    def emit(self, op: str, *, layer: Optional[int] = None,
-             name: Optional[str] = None, phase: str = "forward",
-             tensors: Optional[Dict[str, Any]] = None,
-             state: Optional[Dict[str, Any]] = None,
+    def emit(self, op: str, *, layer: Optional[int] = None, name: Optional[str] = None,
+             phase: str = "forward", tensors: Optional[Dict[str, Any]] = None,
+             values: Optional[Dict[str, Any]] = None, state: Optional[Dict[str, Any]] = None,
              metadata: Optional[Dict[str, Any]] = None) -> TraceEvent:
         self._step += 1
         infos = {}
@@ -80,15 +82,17 @@ class Tracer:
             info = _tensor_info(value, self.summarize_tensors)
             if info is not None:
                 infos[key] = info
-
+        payloads = {}
+        for key, value in (values or {}).items():
+            item = _payload(value)
+            if item is not None:
+                payloads[key] = item
         snapshot_id = None
         if state is not None and self.snapshot_every and self._step % self.snapshot_every == 0:
             snapshot_id = self.snapshots.put(self._step, state)
-
-        event = TraceEvent(
-            step=self._step, op=op, layer=layer, name=name, phase=phase,
-            tensors=infos, snapshot_id=snapshot_id, metadata=metadata or {},
-        )
+        event = TraceEvent(step=self._step, op=op, layer=layer, name=name, phase=phase,
+                           tensors=infos, values=payloads, snapshot_id=snapshot_id,
+                           metadata=metadata or {})
         self.events.append(event)
         return event
 
@@ -111,10 +115,9 @@ def get_tracer() -> Optional[Tracer]:
 
 
 @contextmanager
-def trace(*, snapshot_store: Optional[SnapshotStore] = None,
-          snapshot_every: int = 0, summarize_tensors: bool = True) -> Iterator[Tracer]:
-    tracer = Tracer(snapshot_store=snapshot_store,
-                    snapshot_every=snapshot_every,
+def trace(*, snapshot_store: Optional[SnapshotStore] = None, snapshot_every: int = 0,
+          summarize_tensors: bool = True) -> Iterator[Tracer]:
+    tracer = Tracer(snapshot_store=snapshot_store, snapshot_every=snapshot_every,
                     summarize_tensors=summarize_tensors)
     with tracer.session():
         yield tracer
