@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -111,6 +112,75 @@ def write_trace(path: Path, tracer: Tracer, *, checkpoint: str, prompt: str, con
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+def run_forward_verification(
+    checkpoint_bytes: bytes,
+    *,
+    filename: str,
+    prompt: str,
+    needle_source: str | Path,
+    trace_level: str = "layer",
+    top_k: int = 5,
+) -> dict[str, Any]:
+    """Load uploaded weights and execute one complete Needle forward pass.
+
+    This is intentionally kept in the trace runner so the HTTP UI and CLI use
+    exactly the same checkpoint loader, tokenization, JAX model and trace path.
+    The uploaded pickle is written to a temporary file and removed afterwards.
+    """
+    if not checkpoint_bytes:
+        raise ValueError("The uploaded checkpoint is empty")
+    if not filename.lower().endswith(".pkl"):
+        raise ValueError("Please upload a .pkl Needle checkpoint")
+    if top_k < 1:
+        raise ValueError("top_k must be >= 1")
+
+    tracer = Tracer()
+    with tempfile.NamedTemporaryFile(prefix="needle-upload-", suffix=".pkl", delete=True) as handle:
+        handle.write(checkpoint_bytes)
+        handle.flush()
+        runtime = load_needle_checkpoint(
+            handle.name,
+            needle_source=needle_source,
+            tracer=tracer,
+            trace_level=trace_level,
+        )
+
+        token_ids = [runtime.tokenizer.bos_token_id] + runtime.tokenizer.encode(prompt)
+        if len(token_ids) > runtime.config.max_seq_len:
+            raise ValueError(
+                f"Prompt token count {len(token_ids)} exceeds max_seq_len={runtime.config.max_seq_len}"
+            )
+        prompt_tokens = _token_rows(token_ids, runtime.tokenizer)
+        tokens = np.asarray([token_ids], dtype=np.int32)
+
+        # Run both paths used by the CLI: hidden states (all transformer layers)
+        # and the ordinary model.apply forward path (final logits).
+        runtime.hidden_states(tokens)
+        logits = runtime.logits(tokens)
+        top_k_rows = _top_k_probabilities(logits, top_k, runtime.tokenizer)
+        tracer.emit(
+            "probability_output",
+            name="model.output.probabilities",
+            metadata={"top_k": top_k_rows, "position": "final", "source": "logits"},
+        )
+
+        return {
+            "format": "needle-timemachine.verification/v1",
+            "filename": filename,
+            "checkpoint_bytes": len(checkpoint_bytes),
+            "prompt": prompt,
+            "prompt_tokens": prompt_tokens,
+            "config": _jsonable(vars(runtime.config)) if hasattr(runtime.config, "__dict__") else str(runtime.config),
+            "events": [event.to_dict() for event in tracer.events],
+            "result": {
+                "layer_count": len([e for e in tracer.events if e.op == "layer_output"]),
+                "runtime_event_count": len([e for e in tracer.events if e.metadata.get("runtime")]),
+                "event_count": len(tracer.events),
+                "top_k": top_k_rows,
+            },
+        }
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Trace a real Needle checkpoint.")
     parser.add_argument(
@@ -197,7 +267,13 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.serve:
         from .ui import serve
-        serve(Path(args.output), args.host, args.port)
+        serve(
+            Path(args.output),
+            args.host,
+            args.port,
+            verification_runner=run_forward_verification,
+            needle_source=args.needle_source,
+        )
     return 0
 
 
