@@ -27,6 +27,8 @@ class TensorPayload:
     dtype: str
     encoding: str
     data: str
+    sum: float
+    sum_squares: float
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -34,8 +36,6 @@ class TensorPayload:
 
 @dataclass(frozen=True)
 class TraceEvent:
-    """A point on the Time Machine timeline."""
-
     step: int
     op: str
     layer: Optional[int] = None
