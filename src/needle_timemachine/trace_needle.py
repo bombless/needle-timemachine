@@ -13,6 +13,7 @@ from .cases import BASE_CASE
 from .needle_runtime import load_needle_checkpoint
 from .trace import Tracer
 from .webgpu_runtime import CactModel, run_webgpu
+from .unquantized_webgpu import UnquantizedWebGPUModel
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -122,7 +123,6 @@ def _top_k_probabilities(logits: Any, top_k: int, tokenizer: Any) -> list[dict[s
     k = min(max(1, int(top_k)), probabilities.size)
     indices = np.argpartition(probabilities, -k)[-k:]
     indices = indices[np.argsort(probabilities[indices])[::-1]]
-
     results = []
     for index in indices:
         token_id = int(index)
@@ -130,87 +130,52 @@ def _top_k_probabilities(logits: Any, top_k: int, tokenizer: Any) -> list[dict[s
             token_text = tokenizer.decode([token_id])
         except Exception:
             token_text = ""
-        token_bytes_hex = token_text.encode("utf-8").hex(" ")
-        results.append({
-            "token_id": token_id,
-            "token_text": token_text,
-            "token_bytes_hex": token_bytes_hex,
-            "probability": float(probabilities[index]),
-        })
+        results.append({"token_id": token_id, "token_text": token_text,
+                        "token_bytes_hex": token_text.encode("utf-8").hex(" "),
+                        "probability": float(probabilities[index])})
     return results
 
 
 def _prompt_token_list(token_ids: list[int], tokenizer: Any) -> list[dict[str, Any]]:
-    """Build a list of token dicts for the prompt (including BOS)."""
     results = []
     for token_id in token_ids:
         try:
             token_text = tokenizer.decode([token_id])
         except Exception:
             token_text = ""
-        token_bytes_hex = token_text.encode("utf-8").hex(" ")
-        results.append({
-            "token_id": token_id,
-            "token_text": token_text,
-            "token_bytes_hex": token_bytes_hex,
-        })
+        results.append({"token_id": token_id, "token_text": token_text,
+                        "token_bytes_hex": token_text.encode("utf-8").hex(" ")})
     return results
 
 
-def write_trace(
-    path: Path,
-    tracer: Tracer,
-    *,
-    checkpoint: str,
-    prompt: str,
-    config: Any,
-    token_ids: list[int] | None = None,
-    tokenizer: Any = None,
-) -> None:
-    prompt_tokens = _prompt_token_list(token_ids, tokenizer) if token_ids and tokenizer else []
-    payload = {
-        "format": "needle-timemachine.trace/v1",
-        "checkpoint": checkpoint,
-        "prompt": prompt,
-        "prompt_tokens": prompt_tokens,
-        "config": _jsonable(vars(config)) if hasattr(config, "__dict__") else _jsonable(config),
-        "events": [event.to_dict() for event in tracer.events],
-    }
+def write_trace(path: Path, tracer: Tracer, *, checkpoint: str, prompt: str,
+                config: Any, token_ids: list[int] | None = None, tokenizer: Any = None) -> None:
+    payload = {"format": "needle-timemachine.trace/v1", "checkpoint": checkpoint,
+               "prompt": prompt,
+               "prompt_tokens": _prompt_token_list(token_ids, tokenizer) if token_ids and tokenizer else [],
+               "config": _jsonable(vars(config)) if hasattr(config, "__dict__") else _jsonable(config),
+               "events": [event.to_dict() for event in tracer.events]}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Trace Needle JAX or needle-webgpu arithmetic.")
-    parser.add_argument("--backend", choices=("jax", "webgpu"), default="jax", help="inference path to reproduce")
-    parser.add_argument("--cact", help=".cact file required by --backend webgpu")
-    parser.add_argument(
-        "--checkpoint",
-        default=str(DEFAULT_CHECKPOINT),
-        help=f"Needle checkpoint path (default: {DEFAULT_CHECKPOINT})",
-    )
-    parser.add_argument(
-        "--needle-source",
-        default=str(DEFAULT_NEEDLE_SOURCE),
-        help=f"Local cactus-compute/needle checkout (default: {DEFAULT_NEEDLE_SOURCE})",
-    )
+    parser.add_argument("--backend", choices=("jax", "webgpu"), default="jax")
+    parser.add_argument("--cact", help="optional .cact file for the quantized WebGPU path")
+    parser.add_argument("--checkpoint", default=str(DEFAULT_CHECKPOINT), help=f"Needle checkpoint path (default: {DEFAULT_CHECKPOINT})")
+    parser.add_argument("--needle-source", default=str(DEFAULT_NEEDLE_SOURCE), help=f"Needle checkout (default: {DEFAULT_NEEDLE_SOURCE})")
     parser.add_argument("--prompt", help="Prompt to tokenize (defaults to cases.py BASE_CASE prompt and tools")
-    parser.add_argument("--output", default="traces/run.json", help="Output trace JSON path")
-    parser.add_argument(
-        "--trace-level",
-        choices=("none", "layer", "op"),
-        default="layer",
-        help="layer records hidden states; op records runtime attention/MLP values",
-    )
-    parser.add_argument("--top-k", type=int, default=5, help="Number of final-token probabilities to show in the UI")
-    parser.add_argument("--serve", action="store_true", help="Serve the trace in the local timeline UI")
+    parser.add_argument("--output", default="traces/run.json")
+    parser.add_argument("--trace-level", choices=("none", "layer", "op"), default="layer")
+    parser.add_argument("--top-k", type=int, default=5)
+    parser.add_argument("--serve", action="store_true")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     return parser
 
 
 def _needle_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Convert OpenAI-style function tools to Needle's compact tool schema."""
     normalized = []
     for tool in tools:
         function = tool.get("function") if tool.get("type") == "function" else None
@@ -219,16 +184,10 @@ def _needle_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _default_prompt(*, browser: bool = False) -> str:
-    """Build the default prompt; browser mode matches engine-finetune.ts exactly."""
     tools_json = json.dumps(_needle_tools(BASE_CASE.tools), separators=(",", ":"), ensure_ascii=False)
     if browser:
         return f"<|im_start|>user<tools>{tools_json}</tools>{BASE_CASE.prompt}<|im_end|><|im_start|>assistant"
-    return (
-        "<|im_start|>user\n"
-        f"<tools>{tools_json}</tools>\n"
-        f"{BASE_CASE.prompt}<|im_end|>\n"
-        "<|im_start|>assistant\n"
-    )
+    return "<|im_start|>user\n" + f"<tools>{tools_json}</tools>\n{BASE_CASE.prompt}<|im_end|>\n<|im_start|>assistant\n"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -238,16 +197,24 @@ def main(argv: list[str] | None = None) -> int:
     prompt = args.prompt if args.prompt is not None else _default_prompt(browser=args.backend == "webgpu")
     tracer = Tracer()
     runtime = None
-    cact = None
+    model = None
+    checkpoint_label = args.checkpoint
+
     if args.backend == "webgpu":
-        if not args.cact:
-            raise ValueError("--cact is required with --backend webgpu")
-        cact = CactModel(args.cact)
-        tokenizer = _CactTokenizer(cact.tokenizer_bytes())
-        max_seq_len = cact.g["max_seq_len"]
-        token_ids = [2] + tokenizer.encode(prompt)
+        if args.cact:
+            model = CactModel(args.cact)
+            tokenizer = _CactTokenizer(model.tokenizer_bytes())
+            checkpoint_label = args.cact
+        else:
+            # Important: this path deliberately bypasses .cact and uses the
+            # original, unquantized Needle 2 .pkl parameters.
+            model = UnquantizedWebGPUModel(args.checkpoint, args.needle_source)
+            tokenizer = model.tokenizer
+        max_seq_len = model.g["max_seq_len"]
+        token_ids = [getattr(tokenizer, "bos_token_id", 2)] + tokenizer.encode(prompt)
     else:
-        runtime = load_needle_checkpoint(args.checkpoint, needle_source=args.needle_source, tracer=tracer, trace_level=args.trace_level)
+        runtime = load_needle_checkpoint(args.checkpoint, needle_source=args.needle_source,
+                                         tracer=tracer, trace_level=args.trace_level)
         tokenizer = runtime.tokenizer
         max_seq_len = runtime.config.max_seq_len
         token_ids = [runtime.tokenizer.bos_token_id] + runtime.tokenizer.encode(prompt)
@@ -261,36 +228,25 @@ def main(argv: list[str] | None = None) -> int:
     print(f"trace:      {args.trace_level}")
     print(f"backend:    {args.backend}")
     print(f"top-k:      {args.top_k}")
-    print(f"model:      {args.cact if args.backend == 'webgpu' else args.checkpoint}")
+    print(f"model:      {checkpoint_label}")
 
     if args.backend == "webgpu":
-        logits = run_webgpu(cact, token_ids, tracer, trace_level=args.trace_level)
+        logits = run_webgpu(model, token_ids, tracer, trace_level=args.trace_level)
     else:
         runtime.hidden_states(tokens)
         logits = runtime.logits(tokens)
     top_k = _top_k_probabilities(logits, args.top_k, tokenizer)
-    tracer.emit(
-        "probability_output",
-        name="model.output.probabilities",
-        metadata={"top_k": top_k, "position": "final", "source": "logits"},
-    )
-    write_trace(
-        Path(args.output),
-        tracer,
-        checkpoint=str(args.cact if args.backend == "webgpu" else args.checkpoint),
-        prompt=prompt,
-        config=(cact.g if args.backend == "webgpu" else runtime.config),
-        token_ids=token_ids,
-        tokenizer=tokenizer,
-    )
-
+    tracer.emit("probability_output", name="model.output.probabilities",
+                metadata={"top_k": top_k, "position": "final", "source": "logits"})
+    write_trace(Path(args.output), tracer, checkpoint=checkpoint_label, prompt=prompt,
+                config=(model.g if args.backend == "webgpu" else runtime.config),
+                token_ids=token_ids, tokenizer=tokenizer)
     layer_events = [e for e in tracer.events if e.op == "layer_output"]
     runtime_events = [e for e in tracer.events if e.metadata.get("runtime")]
     print(f"layers:     {len(layer_events)}")
     print(f"runtime:    {len(runtime_events)}")
     print(f"events:     {len(tracer.events)}")
     print(f"saved:      {args.output}")
-
     if args.serve:
         from .ui import serve
         serve(Path(args.output), args.host, args.port)
