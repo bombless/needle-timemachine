@@ -1,221 +1,32 @@
 import { numpy as np } from 'https://esm.sh/@jax-js/jax@0.1.23'
-let trace = { events: [] },
-  pos = 0,
-  timer = null,
-  jaxReady = true
-const $ = id => document.getElementById(id)
-const esc = v =>
-  String(v ?? '').replace(
-    /[&<>"']/g,
-    c =>
-      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[
-        c
-      ])
-  )
-async function load () {
-  trace = await (await fetch('/trace.json')).json()
-  $('summary').textContent = `${trace.events.length} events · ${
-    trace.checkpoint || 'unknown checkpoint'
-  }`
-  $('slider').max = Math.max(0, trace.events.length - 1)
-  drawDots()
-  renderPrompt()
-  render(0)
-}
-function drawDots () {
-  const t = $('track')
-  t.innerHTML = ''
-  trace.events.forEach((e, i) => {
-    const d = document.createElement('button')
-    d.className = 'dot' + (e.op === 'layer_output' ? ' layer' : '')
-    d.title = `${e.step}: ${e.op}`
-    d.style.left =
-      (trace.events.length < 2 ? 50 : (i * 100) / (trace.events.length - 1)) +
-      '%'
-    d.onclick = () => render(i)
-    t.appendChild(d)
-  })
-}
-function decode (p) {
-  if (!p || p.encoding !== 'base64-f32-le')
-    throw new Error('unsupported tensor payload')
-  const raw = Uint8Array.from(atob(p.data), c => c.charCodeAt(0))
-  return np
-    .array(new Float32Array(raw.buffer), { dtype: np.float32 })
-    .reshape(p.shape)
-}
-async function fingerprint (a) {
-  const sum = await a.ref.sum().jsAsync()
-  const sq = await a.mul(a.ref).sum().jsAsync()
-  return { sum: Number(sum), sumSquares: Number(sq) }
-}
-function closeEnough (a, b, scale = 1) {
-  const tol = 1e-4 * Math.max(1, Math.abs(b), scale)
-  return Math.abs(a - b) <= tol
-}
-async function verifyLayer () {
-  const e = trace.events[pos]
-  if (e.op !== 'layer_output' || !e.values?.input || !e.values?.output) {
-    $('verifyStatus').className = 'status warn'
-    $('verifyStatus').textContent =
-      '该事件没有可重放的 layer input/output payload。'
-    return
-  }
-  const btn = $('verify')
-  btn.disabled = true
-  btn.textContent = '验算中…'
-  $('verifyStatus').className = 'status'
-  try {
-    const input = decode(e.values.input),
-      output = decode(e.values.output)
-    const fi = await fingerprint(input),
-      fo = await fingerprint(output)
-    const ri = e.values.input,
-      ro = e.values.output
-    const inputOk =
-      closeEnough(fi.sum, ri.sum, Math.sqrt(Math.abs(fi.sumSquares))) &&
-      closeEnough(fi.sumSquares, ri.sum_squares, Math.abs(ri.sum_squares))
-    const outputOk =
-      closeEnough(fo.sum, ro.sum, Math.sqrt(Math.abs(fo.sumSquares))) &&
-      closeEnough(fo.sumSquares, ro.sum_squares, Math.abs(ro.sum_squares))
-    let continuity = true,
-      continuityText = ''
-    const prev = trace.events.find(
-      x => x.op === 'layer_output' && Number(x.layer) === Number(e.layer) - 1
-    )
-    if (prev?.values?.output) {
-      const a = decode(prev.values.output),
-        b = decode(e.values.input)
-      const delta = await np.abs(a.sub(b)).max().jsAsync()
-      continuity = Number(delta) <= 1e-5
-      continuityText = `；与上一层输出最大差 ${Number(delta).toExponential(3)}`
-    } else if (Number(e.layer) === 0) {
-      const emb = trace.events.find(x => x.op === 'embedding_output')
-      if (emb?.values?.output) {
-        const a = decode(emb.values.output),
-          b = decode(e.values.input)
-        const delta = await np.abs(a.sub(b)).max().jsAsync()
-        continuity = Number(delta) <= 1e-5
-        continuityText = `；与 embedding 输出最大差 ${Number(
-          delta
-        ).toExponential(3)}`
-      }
-    }
-    const ok = inputOk && outputOk && continuity
-    $('verifyStatus').className = 'status ' + (ok ? 'ok' : 'bad')
-    $('verifyStatus').innerHTML = ok
-      ? `<b>✓ JAX.js 验算通过</b>：输入/输出指纹与 Python trace 一致${continuityText}。`
-      : `<b>✗ 验算失败</b>：${!inputOk ? 'input fingerprint 不一致；' : ''}${
-          !outputOk ? 'output fingerprint 不一致；' : ''
-        }${!continuity ? '层间输入/输出不连续。' : ''}`
-  } catch (err) {
-    $('verifyStatus').className = 'status bad'
-    $('verifyStatus').textContent = 'JAX.js 验算异常：' + err.message
-  } finally {
-    btn.disabled = false
-    btn.textContent = 'JAX.js 验算这一层'
-  }
-}
-function render (i) {
-  if (!trace.events.length) return
-  pos = Math.max(0, Math.min(i, trace.events.length - 1))
-  const e = trace.events[pos]
-  $('slider').value = pos
-  $('title').textContent = `Step ${e.step} · ${e.op}`
-  $('details').innerHTML = [
-    ['layer', e.layer ?? '—'],
-    ['name', e.name ?? '—'],
-    ['phase', e.phase],
-    ['snapshot', e.snapshot_id ?? '—']
-  ]
-    .map(([k, v]) => `<div class="muted">${k}</div><div>${esc(v)}</div>`)
-    .join('')
-  $('tensors').textContent = JSON.stringify(e.tensors || {}, null, 2)
-  $('metadata').textContent = JSON.stringify(e.metadata || {}, null, 2)
-  const isLayer = e.op === 'layer_output'
-  $('verify').disabled = !isLayer
-  $('layerTitle').textContent = isLayer
-    ? `Layer ${e.layer} verification`
-    : 'Layer verification'
-  if (isLayer)
-    $('verifyStatus').textContent =
-      '点击按钮，用 jax-js 在浏览器重放本层记录的 input/output。'
-  document
-    .querySelectorAll('.dot')
-    .forEach((d, j) => d.classList.toggle('current', j === pos))
-  renderProbabilities(e)
-}
-function renderPrompt () {
-  const xs = trace.prompt_tokens || []
-  $('promptTokens').innerHTML = xs.length
-    ? '<table class="token-table"><tr><th>#</th><th>ID</th><th>文本</th></tr>' +
-      xs
-        .map(
-          (x, i) =>
-            `<tr><td>${i + 1}</td><td>${esc(x.token_id)}</td><td class="mono">${
-              esc(x.token_text) || '∅'
-            }</td></tr>`
-        )
-        .join('') +
-      '</table>'
-    : '—'
-}
-function renderProbabilities (e) {
-  const xs = e?.metadata?.top_k
-  if (!Array.isArray(xs) || !xs.length) {
-    $('probabilities').textContent = '—'
-    return
-  }
-  $('probabilities').innerHTML =
-    '<table class="probability-table"><tr><th>Rank</th><th>ID</th><th>文本</th><th>概率</th><th>分布</th></tr>' +
-    xs
-      .map((x, i) => {
-        const p = Number(x.probability) || 0
-        return `<tr><td>${i + 1}</td><td>${esc(x.token_id)}</td><td>${
-          esc(x.token_text) || '∅'
-        }</td><td>${(p * 100).toFixed(
-          4
-        )}%</td><td><div class="probbar"><div class="fill" style="width:${Math.min(
-          100,
-          p * 100
-        )}%"></div></div></td></tr>`
-      })
-      .join('') +
-    '</table>'
-}
-function step (n) {
-  render(pos + n)
-}
-function stop () {
-  clearTimeout(timer)
-  timer = null
-  $('play').textContent = '▶ Play'
-}
-function play () {
-  if (timer) return
-  $('play').textContent = '⏸ Pause'
-  const tick = () => {
-    if (pos >= trace.events.length - 1) {
-      stop()
-      return
-    }
-    step(1)
-    timer = setTimeout(tick, 500 / +$('speed').value)
-  }
-  tick()
-}
-$('first').onclick = () => render(0)
-$('prev').onclick = () => step(-1)
-$('next').onclick = () => step(1)
-$('last').onclick = () => render(trace.events.length - 1)
-$('slider').oninput = e => render(+e.target.value)
-$('verify').onclick = verifyLayer
-$('speed').oninput = e => {
-  $('speedText').textContent = e.target.value + '×'
-  if (timer) {
-    stop()
-    play()
-  }
-}
-$('play').onclick = () => (timer ? stop() : play())
-load()
+let trace={events:[],weights:null},pos=0,timer=null
+const $=id=>document.getElementById(id)
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]))
+function decode(p){if(!p||p.encoding!=='base64-f32-le')throw Error('unsupported tensor payload');const raw=Uint8Array.from(atob(p.data),c=>c.charCodeAt(0));return np.array(new Float32Array(raw.buffer),{dtype:np.float32}).reshape(p.shape)}
+function W(ws,names){for(const n of names){if(ws[n])return decode(ws[n]);const k=Object.keys(ws).find(x=>x.endsWith('/'+n));if(k)return decode(ws[k])}throw Error('missing weight: '+names.join(' | '))}
+function L(ws,l,n,names){const x=W(ws,names);return x.shape[0]===n?np.take(x,[l],0).squeeze(0):x}
+function softmax(x,axis=-1){const m=np.max(x,axis,{keepdims:true});const e=np.exp(x.sub(m));return e.div(np.sum(e,axis,{keepdims:true}))}
+function sigmoid(x){return np.reciprocal(np.add(1,np.exp(x.neg())))}
+function rms(x,scale){const r=np.sqrt(np.mean(np.square(x),-1,{keepdims:true}).add(1e-6));return x.mul(np.add(1,scale)).div(r)}
+function rmsUnit(x){return x.div(np.sqrt(np.mean(np.square(x),-1,{keepdims:true}).add(1e-6)))}
+function dense(x,w){return np.matmul(x,w)}
+function rope(x,cos,sin){const d=x.shape.at(-1),h=d/2;const a=np.take(x,np.arange(0,h),-1),b=np.take(x,np.arange(h,d),-1);const c=np.take(cos,np.arange(x.shape[2]),2),s=np.take(sin,np.arange(x.shape[2]),2);return np.concatenate([a.mul(c).sub(b.mul(s)),b.mul(c).add(a.mul(s))],-1)}
+function makeRope(headDim,T,theta){const f=np.power(theta,np.arange(0,headDim,2).astype(np.float32).div(headDim).neg());const t=np.arange(T).astype(np.float32);const ang=np.matmul(t.reshape([T,1]),f.reshape([1,headDim/2]));return [np.cos(ang).reshape([1,1,T,headDim/2]),np.sin(ang).reshape([1,1,T,headDim/2])]}
+function denseL(ws,l,n,names){return L(ws,l,n,names.map(x=>x+'/kernel').concat(names))}
+function attention(x,l,ws,cfg,mask,rp){const n=cfg.num_layers,d=cfg.d_model,h=cfg.num_heads,kvh=cfg.num_kv_heads,ad=cfg.attn_dim||d,hd=ad/h,kvd=kvh*hd;let q=dense(x,denseL(ws,l,n,['stack/layers/block/self_attn/q_proj'])),k=dense(x,denseL(ws,l,n,['stack/layers/block/self_attn/k_proj'])),v=dense(x,denseL(ws,l,n,['stack/layers/block/self_attn/v_proj']));q=q.reshape([1,x.shape[1],h,hd]).transpose([0,2,1,3]);k=k.reshape([1,x.shape[1],kvh,hd]).transpose([0,2,1,3]);v=v.reshape([1,x.shape[1],kvh,hd]).transpose([0,2,1,3]);q=rms(q,L(ws,l,n,['stack/layers/block/self_attn/q_norm/scale']));k=rms(k,L(ws,l,n,['stack/layers/block/self_attn/k_norm/scale']));q=rope(q,rp[0],rp[1]);k=rope(k,rp[0],rp[1]);if(h>kvh){k=np.repeat(k,h/kvh,1);v=np.repeat(v,h/kvh,1)}let a=np.matmul(q,k.transpose([0,1,3,2])).div(Math.sqrt(hd));a=np.where(mask,a,-1e9);a=softmax(a,-1);let o=np.matmul(a,v).transpose([0,2,1,3]).reshape([1,x.shape[1],ad]);o=o.mul(sigmoid(dense(x,denseL(ws,l,n,['stack/layers/block/self_attn/gate_proj']))));return dense(o,denseL(ws,l,n,['stack/layers/block/self_attn/out_proj']))}
+function hadamard(x,l,ws,cfg){const d=cfg.d_model,n=2**Math.ceil(Math.log2(d)),pad=n-d;let H=np.array([[1]],{dtype:np.float32});while(H.shape[0]<n)H=np.concatenate([np.concatenate([H,H],1),np.concatenate([H,H.mul(-1)],1)],0).div(Math.sqrt(2));let z=pad?np.pad(x,[[0,0],[0,0],[0,pad]]):x;z=np.matmul(z.mul(L(ws,l,cfg.num_layers,['stack/layers/block/hadamard_mlp/d1'])),H);z=np.multiply(L(ws,l,cfg.num_layers,['stack/layers/block/hadamard_mlp/d2']),z);z=z.mul(sigmoid(z));z=np.matmul(z,H).mul(L(ws,l,cfg.num_layers,['stack/layers/block/hadamard_mlp/d3']));return np.take(z,np.arange(d),-1)}
+function shiftRight(tokens,j){if(!j)return tokens;return np.concatenate([np.zeros([tokens.shape[0],j],{dtype:np.uint32}),np.take(tokens,np.arange(tokens.shape[1]-j),1)],1)}
+function engramIndices(tokens,orders,heads,slots){const outs=[];for(let oi=0;oi<orders.length;oi++)for(let h=0;h<heads;h++){let acc=np.full(tokens.shape,0x9E3779B9,{dtype:np.uint32});for(let j=0;j<orders[oi];j++)acc=np.multiply(np.bitwise_xor(acc,shiftRight(tokens,j)),0x010001F3);acc=np.bitwise_xor(acc,np.right_shift(acc,15));outs.push(np.mod(acc,slots).astype(np.int32))}return np.stack(outs,-1)}
+function engramKV(tokens,ws,cfg){const orders=cfg.engram_orders||[2,3],heads=cfg.engram_heads||Math.max(1,Math.floor(cfg.d_model/(orders.length*128))),sites=cfg.engram_layers||[],idx=engramIndices(tokens.astype(np.uint32),orders,heads,cfg.engram_slots);const ks=[],vs=[];for(let s=0;s<sites.length;s++){const pref='engrams_'+s;const table=W(ws,[pref+'/embedding','engrams/'+s+'/embedding']);const parts=[];for(let t=0;t<idx.shape[2];t++){let part=np.take(table,np.take(idx,[t],2).squeeze(2),1);const order=orders[Math.floor(t/heads)];const ok=np.arange(tokens.shape[1]).ge(order-1).astype(np.float32).reshape([1,tokens.shape[1],1]);parts.push(part.mul(ok))}const e=np.concatenate(parts,-1);ks.push(dense(e,W(ws,[pref+'/key_proj/kernel'])));vs.push(dense(e,W(ws,[pref+'/value_proj/kernel'])))}return ks.length?[np.stack(ks,0),np.stack(vs,0)]:null}
+function sinkhorn(x){let y=x;for(let i=0;i<20;i++){y=y.sub(np.log(np.sum(np.exp(y),-1,{keepdims:true})));y=y.sub(np.log(np.sum(np.exp(y),-2,{keepdims:true})))}return np.exp(y)}
+function block(u,l,ws,cfg,mask,rp,engram){let x=u;if(engram){const site=cfg.engram_layers.indexOf(l);if(site>=0){const ek=np.take(engram[0],[site],0).squeeze(0),ev=np.take(engram[1],[site],0).squeeze(0);const alpha=sigmoid(np.einsum('btd,btd->bt',rmsUnit(x),rmsUnit(ek)).div(Math.sqrt(cfg.d_model)));x=x.add(np.multiply(alpha.reshape([1,x.shape[1],1]),ev))}}const skip=x;let z=rms(x,L(ws,l,cfg.num_layers,['stack/layers/block/ZCRMSNorm_0/scale','stack/layers/block/ZCRMSNorm/scale']));let a=attention(z,l,ws,cfg,mask,rp);a=rms(a,L(ws,l,cfg.num_layers,['stack/layers/block/post_attn_norm/scale']));x=skip.add(sigmoid(L(ws,l,cfg.num_layers,['stack/layers/block/attn_gate'])).mul(a));const skip2=x;z=rms(x,L(ws,l,cfg.num_layers,['stack/layers/block/pre_hada_norm/scale']));return skip2.add(hadamard(z,l,ws,cfg))}
+function fullForward(ids,ws,cfg){const T=ids.length,d=cfg.d_model,n=cfg.num_layers,lanes=cfg.mhc_lanes||4;const mask=np.tril(np.ones([T,T],{dtype:np.bool_})).reshape([1,1,T,T]);const E=W(ws,['embedding/embedding']);let x=np.take(E,np.array(ids,{dtype:np.int32}),0).reshape([1,T,d]).mul(Math.sqrt(d));const rp=makeRope((cfg.attn_dim||d)/cfg.num_heads,T,cfg.rope_theta);const eng=engramKV(np.array([ids],{dtype:np.int32}),ws,cfg);const zero=np.zeros([d]);const hidden=[x];for(let l=0;l<n;l++){const xf=x.reshape([1,T,lanes,d]);const nx=rmsUnit(xf.reshape([1,T,lanes*d]));const phiPre=L(ws,l,n,['stack/mhc_phi_pre']),phiPost=L(ws,l,n,['stack/mhc_phi_post']),phiRes=L(ws,l,n,['stack/mhc_phi_res']);const hpre=sigmoid(np.multiply(L(ws,l,n,['stack/mhc_a_pre']).reshape([1]),np.matmul(nx,phiPre)).add(L(ws,l,n,['stack/mhc_b_pre'])).add(L(ws,l,n,['stack/pre_off'])));const u=np.einsum('btn,btnc->btc',hpre,xf);const y=block(u,l,ws,cfg,mask,rp,eng).sub(u);const hpost=np.multiply(2,sigmoid(np.multiply(L(ws,l,n,['stack/mhc_a_post']).reshape([1]),np.matmul(nx,phiPost)).add(L(ws,l,n,['stack/mhc_b_post'])).add(L(ws,l,n,['stack/post_off']))));const res=np.matmul(nx,phiRes);const hres=sinkhorn(np.multiply(L(ws,l,n,['stack/mhc_a_res']).reshape([1]),res.reshape([1,T,lanes,lanes])).add(L(ws,l,n,['stack/mhc_b_res'])));const nx2=np.einsum('btij,btjc->btic',hres,xf).add(np.multiply(hpost.reshape([1,T,lanes,1]),y.reshape([1,T,1,d])));x=nx2.reshape([1,T,lanes*d]);x=np.mean(np.reshape(x,[1,T,lanes,d]),2);hidden.push(x)}x=rms(x,W(ws,['stack/final_norm/scale']));return {hidden,logits:np.matmul(x,E.transpose([1,0]))}}
+async function verifyBrowser(){if(!trace.token_ids?.length||!trace.weights)throw Error('trace_needle.py did not return token_ids/weights');$('forwardStatus').textContent='jax-js 正在执行 embedding → MHC/Engram → 全部 layers → logits…';const out=fullForward(trace.token_ids,trace.weights,trace.config);const refs=(trace.reference?.events||[]).filter(e=>e.op==='layer_output');let maxDiff=null;if(refs.length===out.hidden.length-1){for(let i=0;i<refs.length;i++){const d=await np.max(np.abs(out.hidden[i+1].sub(decode(refs[i].values.output)))).jsAsync();maxDiff=maxDiff===null?Number(d):Math.max(maxDiff,Number(d))}}$('layerCount').textContent=String(out.hidden.length-1);$('maxDiff').textContent=maxDiff===null?'—':maxDiff.toExponential(3);const logits=await out.logits.jsAsync(),last=logits[0][logits[0].length-1];const top=last.reduce((bi,v,i)=>v>last[bi]?i:bi,0),refTop=trace.reference?.top_k?.[0]?.token_id;$('topMatch').textContent=top===refTop?'✓':'✗';const ok=top===refTop&&(maxDiff===null||maxDiff<0.5);$('forwardStatus').className='status '+(ok?'ok':'bad');$('forwardStatus').textContent=(ok?'✓ 浏览器完整前向通过':'✗ 浏览器完整前向存在差异')+`；top-1 ${top} / Python ${refTop}`+(maxDiff===null?'':`；layer max |Δ| ${maxDiff.toExponential(3)}`)}
+function drawDots(){const t=$('track');t.innerHTML='';trace.events.forEach((e,i)=>{const d=document.createElement('button');d.className='dot'+(e.op==='layer_output'?' layer':'');d.style.left=(trace.events.length<2?50:i*100/(trace.events.length-1))+'%';d.onclick=()=>render(i);t.appendChild(d)})}
+function render(i){if(!trace.events.length)return;pos=Math.max(0,Math.min(i,trace.events.length-1));const e=trace.events[pos];$('slider').value=pos;$('title').textContent=`Step ${e.step} · ${e.op}`;$('details').innerHTML=[['layer',e.layer??'—'],['name',e.name??'—'],['phase',e.phase],['snapshot',e.snapshot_id??'—']].map(([k,v])=>`<div class="muted">${k}</div><div>${esc(v)}</div>`).join('');$('tensors').textContent=JSON.stringify(e.tensors||{},null,2);$('metadata').textContent=JSON.stringify(e.metadata||{},null,2);document.querySelectorAll('.dot').forEach((d,j)=>d.classList.toggle('current',j===pos));renderProbabilities(e)}
+function renderPrompt(){const xs=trace.prompt_tokens||[];$('promptTokens').innerHTML=xs.length?'<table class="token-table"><tr><th>#</th><th>ID</th><th>文本</th></tr>'+xs.map((x,i)=>`<tr><td>${i+1}</td><td>${esc(x.token_id)}</td><td class="mono">${esc(x.token_text)||'∅'}</td></tr>`).join('')+'</table>':'—'}
+function renderProbabilities(e){const xs=e?.metadata?.top_k;if(!Array.isArray(xs)||!xs.length){$('probabilities').textContent='—';return}$('probabilities').innerHTML='<table class="probability-table"><tr><th>Rank</th><th>ID</th><th>文本</th><th>概率</th><th>分布</th></tr>'+xs.map((x,i)=>{const p=Number(x.probability)||0;return `<tr><td>${i+1}</td><td>${esc(x.token_id)}</td><td>${esc(x.token_text)||'∅'}</td><td>${(p*100).toFixed(4)}%</td><td><div class="probbar"><div class="fill" style="width:${Math.min(100,p*100)}%"></div></div></td></tr>`}).join('')+'</table>'}
+function step(n){render(pos+n)}function stop(){clearTimeout(timer);timer=null;$('play').textContent='▶ Play'}function play(){if(timer)return;$('play').textContent='⏸ Pause';const tick=()=>{if(pos>=trace.events.length-1){stop();return}step(1);timer=setTimeout(tick,500/+$('speed').value)};tick()}
+$('first').onclick=()=>render(0);$('prev').onclick=()=>step(-1);$('next').onclick=()=>step(1);$('last').onclick=()=>render(trace.events.length-1);$('slider').oninput=e=>render(+e.target.value);$('play').onclick=()=>timer?stop():play();$('speed').oninput=e=>{$('speedText').textContent=e.target.value+'×';if(timer){stop();play()}}
+$('verifyForm').onsubmit=async e=>{e.preventDefault();const f=$('checkpoint').files[0];if(!f)return;const b=$('loadBtn'),s=$('verifyStatus');b.disabled=true;s.className='status';s.textContent=`上传 ${f.name} (${f.size.toLocaleString()} bytes)…`;try{const r=await fetch('/api/verify',{method:'POST',body:new FormData(e.target)}),d=await r.json();if(!r.ok)throw Error(d.error||`HTTP ${r.status}`);trace=d;s.className='status ok';s.textContent='✓ 权重已载入，开始浏览器 forward';drawDots();renderPrompt();render(0);await verifyBrowser()}catch(x){s.className='status bad';s.textContent='失败：'+x.message}finally{b.disabled=false}}
+fetch('/trace.json',{cache:'no-store'}).then(r=>r.json()).then(x=>{trace=x;drawDots();renderPrompt();render(0)}).catch(()=>{})
