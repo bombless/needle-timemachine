@@ -55,18 +55,13 @@ def _find_logits(value: Any) -> np.ndarray:
 
 
 def _token_rows(token_ids: list[int], tokenizer: Any) -> list[dict[str, Any]]:
-    """Return the exact prompt tokenization in the same format as probability rows."""
     rows = []
     for token_id in token_ids:
         try:
             token_text = tokenizer.decode([token_id])
         except Exception:
             token_text = ""
-        rows.append({
-            "token_id": int(token_id),
-            "token_text": token_text,
-            "token_bytes_hex": token_text.encode("utf-8").hex(" "),
-        })
+        rows.append({"token_id": int(token_id), "token_text": token_text, "token_bytes_hex": token_text.encode("utf-8").hex(" ")})
     return rows
 
 
@@ -81,7 +76,6 @@ def _top_k_probabilities(logits: Any, top_k: int, tokenizer: Any) -> list[dict[s
     k = min(max(1, int(top_k)), probabilities.size)
     indices = np.argpartition(probabilities, -k)[-k:]
     indices = indices[np.argsort(probabilities[indices])[::-1]]
-
     results = []
     for index in indices:
         token_id = int(index)
@@ -89,25 +83,12 @@ def _top_k_probabilities(logits: Any, top_k: int, tokenizer: Any) -> list[dict[s
             token_text = tokenizer.decode([token_id])
         except Exception:
             token_text = ""
-        token_bytes_hex = token_text.encode("utf-8").hex(" ")
-        results.append({
-            "token_id": token_id,
-            "token_text": token_text,
-            "token_bytes_hex": token_bytes_hex,
-            "probability": float(probabilities[index]),
-        })
+        results.append({"token_id": token_id, "token_text": token_text, "token_bytes_hex": token_text.encode("utf-8").hex(" "), "probability": float(probabilities[index])})
     return results
 
 
 def write_trace(path: Path, tracer: Tracer, *, checkpoint: str, prompt: str, config: Any, prompt_tokens: list[dict[str, Any]]) -> None:
-    payload = {
-        "format": "needle-timemachine.trace/v1",
-        "checkpoint": checkpoint,
-        "prompt": prompt,
-        "prompt_tokens": prompt_tokens,
-        "config": _jsonable(vars(config)) if hasattr(config, "__dict__") else str(config),
-        "events": [event.to_dict() for event in tracer.events],
-    }
+    payload = {"format": "needle-timemachine.trace/v1", "checkpoint": checkpoint, "prompt": prompt, "prompt_tokens": prompt_tokens, "config": _jsonable(vars(config)) if hasattr(config, "__dict__") else str(config), "events": [event.to_dict() for event in tracer.events]}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
@@ -121,12 +102,7 @@ def run_forward_verification(
     trace_level: str = "layer",
     top_k: int = 5,
 ) -> dict[str, Any]:
-    """Load uploaded weights and execute one complete Needle forward pass.
-
-    This is intentionally kept in the trace runner so the HTTP UI and CLI use
-    exactly the same checkpoint loader, tokenization, JAX model and trace path.
-    The uploaded pickle is written to a temporary file and removed afterwards.
-    """
+    """Load uploaded weights and execute one complete Needle forward pass."""
     if not checkpoint_bytes:
         raise ValueError("The uploaded checkpoint is empty")
     if not filename.lower().endswith(".pkl"):
@@ -135,11 +111,13 @@ def run_forward_verification(
         raise ValueError("top_k must be >= 1")
 
     tracer = Tracer()
-    with tempfile.NamedTemporaryFile(prefix="needle-upload-", suffix=".pkl", delete=True) as handle:
-        handle.write(checkpoint_bytes)
-        handle.flush()
+    # Close the temporary file before loading it: this is required on Windows,
+    # where an open NamedTemporaryFile cannot normally be reopened by pathname.
+    with tempfile.TemporaryDirectory(prefix="needle-upload-") as tmp:
+        checkpoint_path = Path(tmp) / "checkpoint.pkl"
+        checkpoint_path.write_bytes(checkpoint_bytes)
         runtime = load_needle_checkpoint(
-            handle.name,
+            checkpoint_path,
             needle_source=needle_source,
             tracer=tracer,
             trace_level=trace_level,
@@ -147,22 +125,15 @@ def run_forward_verification(
 
         token_ids = [runtime.tokenizer.bos_token_id] + runtime.tokenizer.encode(prompt)
         if len(token_ids) > runtime.config.max_seq_len:
-            raise ValueError(
-                f"Prompt token count {len(token_ids)} exceeds max_seq_len={runtime.config.max_seq_len}"
-            )
+            raise ValueError(f"Prompt token count {len(token_ids)} exceeds max_seq_len={runtime.config.max_seq_len}")
         prompt_tokens = _token_rows(token_ids, runtime.tokenizer)
         tokens = np.asarray([token_ids], dtype=np.int32)
 
-        # Run both paths used by the CLI: hidden states (all transformer layers)
-        # and the ordinary model.apply forward path (final logits).
+        # Execute the same two paths as the CLI: all hidden states plus final logits.
         runtime.hidden_states(tokens)
         logits = runtime.logits(tokens)
         top_k_rows = _top_k_probabilities(logits, top_k, runtime.tokenizer)
-        tracer.emit(
-            "probability_output",
-            name="model.output.probabilities",
-            metadata={"top_k": top_k_rows, "position": "final", "source": "logits"},
-        )
+        tracer.emit("probability_output", name="model.output.probabilities", metadata={"top_k": top_k_rows, "position": "final", "source": "logits"})
 
         return {
             "format": "needle-timemachine.verification/v1",
@@ -183,24 +154,11 @@ def run_forward_verification(
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Trace a real Needle checkpoint.")
-    parser.add_argument(
-        "--checkpoint",
-        default=str(DEFAULT_CHECKPOINT),
-        help=f"Needle checkpoint path (default: {DEFAULT_CHECKPOINT})",
-    )
-    parser.add_argument(
-        "--needle-source",
-        default=str(DEFAULT_NEEDLE_SOURCE),
-        help=f"Local cactus-compute/needle checkout (default: {DEFAULT_NEEDLE_SOURCE})",
-    )
+    parser.add_argument("--checkpoint", default=str(DEFAULT_CHECKPOINT), help=f"Needle checkpoint path (default: {DEFAULT_CHECKPOINT})")
+    parser.add_argument("--needle-source", default=str(DEFAULT_NEEDLE_SOURCE), help=f"Local cactus-compute/needle checkout (default: {DEFAULT_NEEDLE_SOURCE})")
     parser.add_argument("--prompt", help="Prompt to tokenize (defaults to cases.py BASE_CASE prompt and tools)")
     parser.add_argument("--output", default="traces/run.json", help="Output trace JSON path")
-    parser.add_argument(
-        "--trace-level",
-        choices=("none", "layer", "op"),
-        default="layer",
-        help="layer records hidden states; op records runtime attention/MLP values",
-    )
+    parser.add_argument("--trace-level", choices=("none", "layer", "op"), default="layer", help="layer records hidden states; op records runtime attention/MLP values")
     parser.add_argument("--top-k", type=int, default=5, help="Number of final-token probabilities to show in the UI")
     parser.add_argument("--serve", action="store_true", help="Serve the trace in the local timeline UI")
     parser.add_argument("--host", default="127.0.0.1")
@@ -209,7 +167,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def _default_prompt() -> str:
-    """Build the default model prompt from BASE_CASE's user prompt and tools."""
     tools = json.dumps(BASE_CASE.tools, ensure_ascii=False, indent=2)
     return f"{BASE_CASE.prompt}\n\nTools:\n{tools}"
 
@@ -220,19 +177,11 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("--top-k must be >= 1")
     prompt = args.prompt if args.prompt is not None else _default_prompt()
     tracer = Tracer()
-    runtime = load_needle_checkpoint(
-        args.checkpoint,
-        needle_source=args.needle_source,
-        tracer=tracer,
-        trace_level=args.trace_level,
-    )
+    runtime = load_needle_checkpoint(args.checkpoint, needle_source=args.needle_source, tracer=tracer, trace_level=args.trace_level)
     token_ids = [runtime.tokenizer.bos_token_id] + runtime.tokenizer.encode(prompt)
     if len(token_ids) > runtime.config.max_seq_len:
-        raise ValueError(
-            f"Prompt token count {len(token_ids)} exceeds max_seq_len={runtime.config.max_seq_len}"
-        )
+        raise ValueError(f"Prompt token count {len(token_ids)} exceeds max_seq_len={runtime.config.max_seq_len}")
     prompt_tokens = _token_rows(token_ids, runtime.tokenizer)
-
     tokens = np.asarray([token_ids], dtype=np.int32)
     print("Needle Time Machine")
     print("-------------------")
@@ -240,40 +189,20 @@ def main(argv: list[str] | None = None) -> int:
     print(f"trace:      {args.trace_level}")
     print(f"top-k:      {args.top_k}")
     print(f"checkpoint: {args.checkpoint}")
-
     runtime.hidden_states(tokens)
     logits = runtime.logits(tokens)
     top_k = _top_k_probabilities(logits, args.top_k, runtime.tokenizer)
-    tracer.emit(
-        "probability_output",
-        name="model.output.probabilities",
-        metadata={"top_k": top_k, "position": "final", "source": "logits"},
-    )
-    write_trace(
-        Path(args.output),
-        tracer,
-        checkpoint=str(args.checkpoint),
-        prompt=prompt,
-        config=runtime.config,
-        prompt_tokens=prompt_tokens,
-    )
-
+    tracer.emit("probability_output", name="model.output.probabilities", metadata={"top_k": top_k, "position": "final", "source": "logits"})
+    write_trace(Path(args.output), tracer, checkpoint=str(args.checkpoint), prompt=prompt, config=runtime.config, prompt_tokens=prompt_tokens)
     layer_events = [e for e in tracer.events if e.op == "layer_output"]
     runtime_events = [e for e in tracer.events if e.metadata.get("runtime")]
     print(f"layers:     {len(layer_events)}")
     print(f"runtime:    {len(runtime_events)}")
     print(f"events:     {len(tracer.events)}")
     print(f"saved:      {args.output}")
-
     if args.serve:
         from .ui import serve
-        serve(
-            Path(args.output),
-            args.host,
-            args.port,
-            verification_runner=run_forward_verification,
-            needle_source=args.needle_source,
-        )
+        serve(Path(args.output), args.host, args.port, verification_runner=run_forward_verification, needle_source=args.needle_source)
     return 0
 
 
