@@ -32,30 +32,47 @@ class NeedleAdapter:
         return self.record_hidden_states(tokens, cells, emit_input=False)
 
     def record_hidden_states(self, tokens: Any, cells: Any, *, emit_input: bool = True) -> Any:
-        """Record a precomputed Needle hidden-state tensor.
+        """Record embedding and each layer's hidden-state transition.
 
-        Needle returns [batch, sequence, states, hidden], where state 0 is the
-        embedding output and state i>0 is the output of Transformer layer i-1.
+        ``hidden_states`` returns [batch, sequence, states, hidden], where state
+        0 is the embedding and state i>0 is the collected output after
+        Transformer layer i-1. The layer event therefore carries both the
+        previous collected state and the current state as browser-replayable
+        float32 payloads.
         """
         if emit_input:
-            self.tracer.emit("model_input", name="model.hidden_states.input", tensors={"tokens": tokens}, metadata={"shape_only": True})
+            self.tracer.emit("model_input", name="model.hidden_states.input",
+                             tensors={"tokens": tokens}, metadata={"shape_only": True})
         if self.trace_level == "none":
-            self.tracer.emit("hidden_states_output", name="model.hidden_states.output", tensors={"hidden": cells}, metadata={"layer_trace": False})
+            self.tracer.emit("hidden_states_output", name="model.hidden_states.output",
+                             tensors={"hidden": cells}, metadata={"layer_trace": False})
             return cells
         if not hasattr(cells, "shape") or len(cells.shape) != 4:
-            raise ValueError("Needle hidden_states must return [batch, sequence, states, hidden]; got shape=%r" % (getattr(cells, "shape", None),))
+            raise ValueError("Needle hidden_states must return [batch, sequence, states, hidden]")
+
         num_states = int(cells.shape[2])
-        self.tracer.emit("embedding_output", layer=None, name="embedding.output", tensors={"hidden": cells[:, :, 0, :]}, metadata={"state_index": 0, "layer_type": "embedding"})
+        self.tracer.emit("embedding_output", name="embedding.output",
+                         tensors={"hidden": cells[:, :, 0, :]},
+                         values={"output": cells[:, :, 0, :]},
+                         metadata={"state_index": 0, "layer_type": "embedding"})
         if self.trace_level == "layer":
             for state_index in range(1, num_states):
                 layer = state_index - 1
-                self.tracer.emit("layer_output", layer=layer, name=f"layer.{layer}.output", tensors={"hidden": cells[:, :, state_index, :]}, metadata={"state_index": state_index, "layer_type": "transformer"})
-        self.tracer.emit("hidden_states_output", name="model.hidden_states.output", tensors={"hidden": cells}, metadata={"layer_count": max(0, num_states - 1)})
+                layer_input = cells[:, :, state_index - 1, :]
+                layer_output = cells[:, :, state_index, :]
+                self.tracer.emit(
+                    "layer_output", layer=layer, name=f"layer.{layer}.output",
+                    tensors={"input": layer_input, "output": layer_output},
+                    values={"input": layer_input, "output": layer_output},
+                    metadata={"state_index": state_index, "layer_type": "transformer",
+                              "verification": "jax-js-replay-data"},
+                )
+        self.tracer.emit("hidden_states_output", name="model.hidden_states.output",
+                         tensors={"hidden": cells}, metadata={"layer_count": max(0, num_states - 1)})
         return cells
 
 
 def instrument_block_stack(stack: Any, tracer: Tracer) -> Any:
-    """Return a non-invasive callable wrapper around a Stack boundary."""
     original = stack
 
     def call(x: Any, *args: Any, **kwargs: Any) -> Any:
