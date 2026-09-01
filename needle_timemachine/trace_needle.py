@@ -14,7 +14,11 @@ from .needle_runtime import load_needle_checkpoint
 from .trace import Tracer
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+MODULE_PATH = Path(__file__).resolve()
+PROJECT_ROOT = next(
+    (parent for parent in MODULE_PATH.parents if (parent / "pyproject.toml").is_file()),
+    MODULE_PATH.parent.parent,
+)
 DEFAULT_CHECKPOINT = PROJECT_ROOT / "needle2.pkl"
 DEFAULT_NEEDLE_SOURCE = PROJECT_ROOT / "needle"
 
@@ -145,6 +149,8 @@ def _default_prompt() -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    print("module:     " + str(MODULE_PATH))
+    print("project:    " + str(PROJECT_ROOT))
     args = build_arg_parser().parse_args(argv)
     if args.top_k < 1:
         raise ValueError("--top-k must be >= 1")
