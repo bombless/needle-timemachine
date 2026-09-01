@@ -226,6 +226,15 @@
             <div id="verifyStatus" class="status">选择一个 layer 事件后可验算。</div>
         </section>
         <section class="card">
+            <div class="layer-box">
+                <div>
+                    <h2 style="margin:0">完整权重前向校验</h2>
+                    <div class="muted">载入当前 checkpoint 的全部参数，在浏览器中执行一次完整前向传播。</div>
+                </div><button id="verifyFull">载入权重并验算</button>
+            </div>
+            <div id="fullStatus" class="status">尚未载入权重。</div>
+        </section>
+        <section class="card">
             <h2>Prompt tokens</h2>
             <div id="promptTokens" class="muted">—</div>
         </section>

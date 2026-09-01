@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
+from dataclasses import MISSING
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
@@ -51,6 +54,58 @@ def _find_logits(value: Any) -> np.ndarray:
                     return array
             return arrays[0]
     raise TypeError(f"Could not find logits array in model output of type {type(value)!r}")
+
+
+def _tensor_fingerprint(value: Any) -> dict[str, float]:
+    array = np.asarray(value, dtype=np.float32)
+    return {
+        "sum": float(np.sum(array, dtype=np.float64)),
+        "sum_squares": float(np.sum(array * array, dtype=np.float64)),
+    }
+
+
+def _flatten_weights(tree: Any, prefix: tuple[str, ...] = ()) -> list[dict[str, Any]]:
+    """Serialize every parameter leaf in a browser-friendly, lossless layout."""
+    if isinstance(tree, Mapping):
+        result = []
+        for key, value in tree.items():
+            result.extend(_flatten_weights(value, prefix + (str(key),)))
+        return result
+    array = np.asarray(tree, dtype=np.float32)
+    little = np.asarray(array, dtype="<f4", order="C")
+    canonical = tuple(
+        part.replace("engrams_", "engrams.", 1) if part.startswith("engrams_") else part
+        for part in prefix
+    )
+    return [{
+        "name": ".".join(canonical),
+        "shape": list(array.shape),
+        "dtype": str(getattr(tree, "dtype", array.dtype)),
+        "encoding": "base64-f32-le",
+        "data": base64.b64encode(little.tobytes()).decode("ascii"),
+    }]
+
+
+def weight_payload(runtime: Any) -> dict[str, Any]:
+    """Return the complete unquantized parameter tree for the browser verifier."""
+    config = runtime.config
+    if hasattr(config, "__dataclass_fields__"):
+        # TransformerConfig's custom __init__ stores only checkpoint-provided
+        # values, so vars(config) omits defaults used by the model.
+        config_data = {
+            name: getattr(config, name, field.default)
+            for name, field in config.__dataclass_fields__.items()
+            if hasattr(config, name) or field.default is not MISSING
+        }
+    elif hasattr(config, "__dict__"):
+        config_data = vars(config)
+    else:
+        config_data = {}
+    return {
+        "format": "needle-timemachine.weights/v1",
+        "config": _jsonable(config_data),
+        "tensors": _flatten_weights(runtime.params),
+    }
 
 
 def _top_k_probabilities(logits: Any, top_k: int, tokenizer: Any) -> list[dict[str, Any]]:
@@ -201,7 +256,8 @@ def main(argv: list[str] | None = None) -> int:
     tracer.emit(
         "probability_output",
         name="model.output.probabilities",
-        metadata={"top_k": top_k, "position": "final", "source": "logits"},
+        metadata={"top_k": top_k, "position": "final", "source": "logits",
+                  "logits_fingerprint": _tensor_fingerprint(logits)},
     )
     write_trace(
         Path(args.output),
@@ -222,7 +278,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.serve:
         from .ui import serve
-        serve(Path(args.output), args.host, args.port)
+        serve(Path(args.output), args.host, args.port, weights_provider=lambda: weight_payload(runtime))
     return 0
 
 
