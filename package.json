@@ -1,0 +1,11 @@
+{
+  "name": "needle-timemachine-jaxjs-forward",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "forward": "node forward.js"
+  },
+  "dependencies": {
+    "@jax-js/jax": "^0.1.23"
+  }
+}

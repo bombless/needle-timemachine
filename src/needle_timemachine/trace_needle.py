@@ -112,6 +112,55 @@ def weight_payload(runtime: Any) -> dict[str, Any]:
     }
 
 
+def write_weights_bin(path: Path, runtime: Any, token_ids: list[int], reference_logits: Any) -> None:
+    """Write the flat float32 weights.bin consumed by forward.js."""
+    tensors = []
+
+    def collect(tree: Any, prefix: str = "") -> None:
+        if isinstance(tree, Mapping):
+            for key, value in tree.items():
+                collect(value, f"{prefix}/{key}" if prefix else str(key))
+            return
+        array = np.ascontiguousarray(np.asarray(tree, dtype=np.float32))
+        tensors.append((prefix, array))
+
+    collect(runtime.params)
+    blob = bytearray()
+    entries = []
+    for name, array in tensors:
+        raw = array.tobytes(order="C")
+        entries.append({"name": name, "shape": list(array.shape), "offset": len(blob), "nbytes": len(raw)})
+        blob.extend(raw)
+
+    ref = np.ascontiguousarray(np.asarray(reference_logits, dtype=np.float32))
+    ref_offset = len(blob)
+    ref_raw = ref.tobytes(order="C")
+    blob.extend(ref_raw)
+
+    config = {
+        name: getattr(runtime.config, name, field.default)
+        for name, field in runtime.config.__dataclass_fields__.items()
+        if hasattr(runtime.config, name) or field.default is not MISSING
+    }
+    header = {
+        "format": "needle-timemachine.jaxjs-weights/v1",
+        "config": _jsonable(config),
+        "input_tokens": [int(x) for x in token_ids],
+        "tensors": entries,
+        "reference": {"offset": ref_offset, "nbytes": len(ref_raw), "shape": list(ref.shape)},
+    }
+    header_bytes = json.dumps(header, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    output = bytearray(b"NEEDLEJS1")
+    output.extend(len(header_bytes).to_bytes(4, "little"))
+    output.extend(header_bytes)
+    output.extend(blob)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(output)
+    print(f"weights:    {path}")
+    print(f"tensors:    {len(entries)}")
+    print(f"bytes:      {len(output)}")
+
+
 def _top_k_probabilities(logits: Any, top_k: int, tokenizer: Any) -> list[dict[str, Any]]:
     array = _find_logits(logits)
     if array.ndim < 2:
@@ -203,6 +252,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--top-k", type=int, default=5, help="Number of final-token probabilities to show in the UI")
     parser.add_argument("--serve", action="store_true", help="Serve the trace in the local timeline UI")
+    parser.add_argument("--dump-weights", action="store_true", help="Write weights.bin for forward.js")
+    parser.add_argument("--weights-output", default="weights.bin", help="Output path for --dump-weights")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     return parser
@@ -249,6 +300,11 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     tokens = np.asarray([token_ids], dtype=np.int32)
+    if args.dump_weights:
+        reference_logits = runtime.logits(tokens)
+        write_weights_bin(Path(args.weights_output), runtime, token_ids, reference_logits)
+        return 0
+
     print("Needle Time Machine")
     print("-------------------")
     print(f"tokens:     {len(token_ids)}")
@@ -290,3 +346,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
