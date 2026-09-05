@@ -3,6 +3,7 @@ import { init, defaultDevice, numpy as np } from '@jax-js/jax';
 
 const MAGIC = 'NEEDLEJS1';
 const HEADER_BYTES = 4;
+// Match the float32 parameters and arithmetic used by the Python/JAX dump.
 const D = np.float32;
 
 function normalizeConfig(c) {
@@ -28,13 +29,15 @@ function readWeights(path = 'weights.bin') {
   for (const e of header.tensors) {
     const bytes = buf.subarray(dataStart + e.offset, dataStart + e.offset + e.nbytes);
     const raw = new Float32Array(bytes.length / 4);
-    raw.set(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength).buffer ? new Float32Array(Uint8Array.from(bytes).buffer) : []);
+    for (let i = 0; i < raw.length; ++i) raw[i] = bytes.readFloatLE(i * 4);
     weights[e.name] = np.array(raw, { dtype: D }).reshape(e.shape);
   }
   let reference = null;
   if (header.reference) {
     const r = buf.subarray(dataStart + header.reference.offset, dataStart + header.reference.offset + header.reference.nbytes);
-    reference = new Float32Array(Uint8Array.from(r).buffer);
+    const reference32 = new Float32Array(r.length / 4);
+    for (let i = 0; i < reference32.length; ++i) reference32[i] = r.readFloatLE(i * 4);
+    reference = reference32;
   }
   return { header: { ...header, reference }, weights };
 }
@@ -304,12 +307,44 @@ function forward(tokens, cfg, w) {
 }
 
 async function main() {
-  const { header, weights } = readWeights(process.argv[2] || 'weights.bin');
+  const positionalArgs = process.argv.slice(2).filter(x => !x.startsWith('--'));
+  const { header, weights } = readWeights(positionalArgs[0] || 'weights.bin');
   const cfg = normalizeConfig(header.config);
   const tokensArg = process.argv.find(x => x.startsWith('--tokens='));
+  const traceArg = process.argv.find(x => x.startsWith('--trace='));
+  let traceTokens = null;
+  let traceTokenInfo = new Map();
+  if (traceArg) {
+    const tracePath = traceArg.slice('--trace='.length);
+    const trace = JSON.parse(fs.readFileSync(tracePath, 'utf8'));
+    if (!Array.isArray(trace.prompt_tokens)) {
+      throw new Error(`trace has no prompt_tokens array: ${tracePath}`);
+    }
+    // run.json stores prompt_tokens as objects, not as a plain integer list.
+    traceTokens = trace.prompt_tokens.map((x, i) => {
+      const id = typeof x === 'object' ? x.token_id : x;
+      if (!Number.isInteger(id)) throw new Error(`invalid prompt_tokens[${i}] in ${tracePath}`);
+      return id;
+    });
+    // Probability events may contain likely next tokens that do not occur in
+    // the prompt. Collect all serialized token metadata from the trace.
+    const collectTokenInfo = value => {
+      if (Array.isArray(value)) return value.forEach(collectTokenInfo);
+      if (!value || typeof value !== 'object') return;
+      if (Number.isInteger(value.token_id) &&
+          ('token_text' in value || 'token_bytes_hex' in value)) {
+        traceTokenInfo.set(value.token_id, {
+          token_text: value.token_text ?? null,
+          token_bytes_hex: value.token_bytes_hex ?? null,
+        });
+      }
+      Object.values(value).forEach(collectTokenInfo);
+    };
+    collectTokenInfo(trace);
+  }
   const tokens = tokensArg
     ? tokensArg.slice('--tokens='.length).split(',').filter(Boolean).map(Number)
-    : (header.input_tokens || [1, 2, 3, 4]);
+    : (traceTokens || header.input_tokens || [1, 2, 3, 4]);
   const backend = (await init('wasm')).includes('wasm') ? 'wasm' : 'cpu';
   defaultDevice(backend);
   const tokenArray = np.array(Int32Array.from(tokens), { dtype: np.int32 }).reshape([1, tokens.length]);
@@ -332,11 +367,23 @@ async function main() {
     cosine = dot / Math.sqrt(na * nb);
   }
   const final = Array.from(out.slice((tokens.length - 1) * cfg.vocab_size, tokens.length * cfg.vocab_size));
-  let top = final.map((v, i) => [v, i]).sort((a, b) => b[0] - a[0]).slice(0, 5);
+  const top = final.map((logit, token_id) => {
+    const info = traceTokenInfo.get(token_id);
+    return {
+      token_id,
+      logit,
+      token_text: info?.token_text ?? null,
+      token_bytes_hex: info?.token_bytes_hex ?? null,
+    };
+  }).sort((a, b) => b.logit - a.logit).slice(0, 5);
   console.log(`backend:    ${backend}`);
   console.log(`tokens:     ${tokens.length}`);
+  if (traceArg) console.log(`trace:      ${traceArg.slice('--trace='.length)}`);
   console.log(`logits:     ${JSON.stringify(logits.shape)}`);
   console.log(`top-5:      ${JSON.stringify(top)}`);
+  if (traceArg && top.some(x => x.token_text === null)) {
+    console.log('note:       null token text/bytes means that token is absent from trace prompt_tokens; supply a tokenizer vocabulary to decode all predictions.');
+  }
   if (maxAbs !== null) console.log(`max_abs:    ${maxAbs}`);
   if (rmse !== null) console.log(`rmse:       ${rmse}`);
   if (cosine !== null) console.log(`cosine:     ${cosine}`);
