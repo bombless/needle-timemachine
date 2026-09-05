@@ -112,7 +112,13 @@ def weight_payload(runtime: Any) -> dict[str, Any]:
     }
 
 
-def write_weights_bin(path: Path, runtime: Any, token_ids: list[int], reference_logits: Any) -> None:
+def write_weights_bin(
+    path: Path,
+    runtime: Any,
+    token_ids: list[int],
+    reference_logits: Any,
+    tokenizer: Any = None,
+) -> None:
     """Write the flat float32 weights.bin consumed by forward.js."""
     tensors = []
 
@@ -142,10 +148,24 @@ def write_weights_bin(path: Path, runtime: Any, token_ids: list[int], reference_
         for name, field in runtime.config.__dataclass_fields__.items()
         if hasattr(runtime.config, name) or field.default is not MISSING
     }
+    token_metadata = None
+    if tokenizer is not None:
+        token_metadata = []
+        for token_id in range(int(runtime.config.vocab_size)):
+            try:
+                token_text = tokenizer.decode([token_id])
+            except Exception:
+                token_text = ""
+            token_metadata.append({
+                "token_id": token_id,
+                "token_text": token_text,
+                "token_bytes_hex": token_text.encode("utf-8").hex(" "),
+            })
     header = {
         "format": "needle-timemachine.jaxjs-weights/v1",
         "config": _jsonable(config),
         "input_tokens": [int(x) for x in token_ids],
+        "token_metadata": token_metadata,
         "tensors": entries,
         "reference": {"offset": ref_offset, "nbytes": len(ref_raw), "shape": list(ref.shape)},
     }
@@ -302,7 +322,10 @@ def main(argv: list[str] | None = None) -> int:
     tokens = np.asarray([token_ids], dtype=np.int32)
     if args.dump_weights:
         reference_logits = runtime.logits(tokens)
-        write_weights_bin(Path(args.weights_output), runtime, token_ids, reference_logits)
+        write_weights_bin(
+            Path(args.weights_output), runtime, token_ids, reference_logits,
+            tokenizer=runtime.tokenizer,
+        )
         return 0
 
     print("Needle Time Machine")

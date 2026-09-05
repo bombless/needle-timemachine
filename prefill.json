@@ -1,0 +1,403 @@
+[
+    {
+      "token_id": 2,
+      "token_text": "",
+      "token_bytes_hex": ""
+    },
+    {
+      "token_id": 8042,
+      "token_text": "",
+      "token_bytes_hex": ""
+    },
+    {
+      "token_id": 4,
+      "token_text": "<|im_start|>",
+      "token_bytes_hex": "3c 7c 69 6d 5f 73 74 61 72 74 7c 3e"
+    },
+    {
+      "token_id": 573,
+      "token_text": "user",
+      "token_bytes_hex": "75 73 65 72"
+    },
+    {
+      "token_id": 24,
+      "token_text": "\n",
+      "token_bytes_hex": "0a"
+    },
+    {
+      "token_id": 8,
+      "token_text": "<tools>",
+      "token_bytes_hex": "3c 74 6f 6f 6c 73 3e"
+    },
+    {
+      "token_id": 1075,
+      "token_text": "[{\"",
+      "token_bytes_hex": "5b 7b 22"
+    },
+    {
+      "token_id": 598,
+      "token_text": "name",
+      "token_bytes_hex": "6e 61 6d 65"
+    },
+    {
+      "token_id": 359,
+      "token_text": "\":\"",
+      "token_bytes_hex": "22 3a 22"
+    },
+    {
+      "token_id": 1643,
+      "token_text": "set",
+      "token_bytes_hex": "73 65 74"
+    },
+    {
+      "token_id": 8097,
+      "token_text": "_",
+      "token_bytes_hex": "5f"
+    },
+    {
+      "token_id": 8051,
+      "token_text": "l",
+      "token_bytes_hex": "6c"
+    },
+    {
+      "token_id": 2804,
+      "token_text": "ights",
+      "token_bytes_hex": "69 67 68 74 73"
+    },
+    {
+      "token_id": 362,
+      "token_text": "\",\"",
+      "token_bytes_hex": "22 2c 22"
+    },
+    {
+      "token_id": 473,
+      "token_text": "description",
+      "token_bytes_hex": "64 65 73 63 72 69 70 74 69 6f 6e"
+    },
+    {
+      "token_id": 359,
+      "token_text": "\":\"",
+      "token_bytes_hex": "22 3a 22"
+    },
+    {
+      "token_id": 1643,
+      "token_text": "set",
+      "token_bytes_hex": "73 65 74"
+    },
+    {
+      "token_id": 303,
+      "token_text": "b",
+      "token_bytes_hex": "62"
+    },
+    {
+      "token_id": 4949,
+      "token_text": "rightness",
+      "token_bytes_hex": "72 69 67 68 74 6e 65 73 73"
+    },
+    {
+      "token_id": 362,
+      "token_text": "\",\"",
+      "token_bytes_hex": "22 2c 22"
+    },
+    {
+      "token_id": 801,
+      "token_text": "parameters",
+      "token_bytes_hex": "70 61 72 61 6d 65 74 65 72 73"
+    },
+    {
+      "token_id": 433,
+      "token_text": "\":{\"",
+      "token_bytes_hex": "22 3a 7b 22"
+    },
+    {
+      "token_id": 491,
+      "token_text": "type",
+      "token_bytes_hex": "74 79 70 65"
+    },
+    {
+      "token_id": 359,
+      "token_text": "\":\"",
+      "token_bytes_hex": "22 3a 22"
+    },
+    {
+      "token_id": 1886,
+      "token_text": "object",
+      "token_bytes_hex": "6f 62 6a 65 63 74"
+    },
+    {
+      "token_id": 362,
+      "token_text": "\",\"",
+      "token_bytes_hex": "22 2c 22"
+    },
+    {
+      "token_id": 1213,
+      "token_text": "properties",
+      "token_bytes_hex": "70 72 6f 70 65 72 74 69 65 73"
+    },
+    {
+      "token_id": 433,
+      "token_text": "\":{\"",
+      "token_bytes_hex": "22 3a 7b 22"
+    },
+    {
+      "token_id": 4923,
+      "token_text": "room",
+      "token_bytes_hex": "72 6f 6f 6d"
+    },
+    {
+      "token_id": 433,
+      "token_text": "\":{\"",
+      "token_bytes_hex": "22 3a 7b 22"
+    },
+    {
+      "token_id": 491,
+      "token_text": "type",
+      "token_bytes_hex": "74 79 70 65"
+    },
+    {
+      "token_id": 359,
+      "token_text": "\":\"",
+      "token_bytes_hex": "22 3a 22"
+    },
+    {
+      "token_id": 683,
+      "token_text": "string",
+      "token_bytes_hex": "73 74 72 69 6e 67"
+    },
+    {
+      "token_id": 5658,
+      "token_text": "\"},\"",
+      "token_bytes_hex": "22 7d 2c 22"
+    },
+    {
+      "token_id": 8064,
+      "token_text": "b",
+      "token_bytes_hex": "62"
+    },
+    {
+      "token_id": 4949,
+      "token_text": "rightness",
+      "token_bytes_hex": "72 69 67 68 74 6e 65 73 73"
+    },
+    {
+      "token_id": 433,
+      "token_text": "\":{\"",
+      "token_bytes_hex": "22 3a 7b 22"
+    },
+    {
+      "token_id": 491,
+      "token_text": "type",
+      "token_bytes_hex": "74 79 70 65"
+    },
+    {
+      "token_id": 359,
+      "token_text": "\":\"",
+      "token_bytes_hex": "22 3a 22"
+    },
+    {
+      "token_id": 3337,
+      "token_text": "integer",
+      "token_bytes_hex": "69 6e 74 65 67 65 72"
+    },
+    {
+      "token_id": 362,
+      "token_text": "\",\"",
+      "token_bytes_hex": "22 2c 22"
+    },
+    {
+      "token_id": 635,
+      "token_text": "min",
+      "token_bytes_hex": "6d 69 6e"
+    },
+    {
+      "token_id": 3807,
+      "token_text": "imum",
+      "token_bytes_hex": "69 6d 75 6d"
+    },
+    {
+      "token_id": 314,
+      "token_text": "\":",
+      "token_bytes_hex": "22 3a"
+    },
+    {
+      "token_id": 8079,
+      "token_text": "0",
+      "token_bytes_hex": "30"
+    },
+    {
+      "token_id": 342,
+      "token_text": ",\"",
+      "token_bytes_hex": "2c 22"
+    },
+    {
+      "token_id": 7221,
+      "token_text": "max",
+      "token_bytes_hex": "6d 61 78"
+    },
+    {
+      "token_id": 3807,
+      "token_text": "imum",
+      "token_bytes_hex": "69 6d 75 6d"
+    },
+    {
+      "token_id": 314,
+      "token_text": "\":",
+      "token_bytes_hex": "22 3a"
+    },
+    {
+      "token_id": 5777,
+      "token_text": "100",
+      "token_bytes_hex": "31 30 30"
+    },
+    {
+      "token_id": 1246,
+      "token_text": "}},\"",
+      "token_bytes_hex": "7d 7d 2c 22"
+    },
+    {
+      "token_id": 656,
+      "token_text": "required",
+      "token_bytes_hex": "72 65 71 75 69 72 65 64"
+    },
+    {
+      "token_id": 1047,
+      "token_text": "\":[\"",
+      "token_bytes_hex": "22 3a 5b 22"
+    },
+    {
+      "token_id": 4923,
+      "token_text": "room",
+      "token_bytes_hex": "72 6f 6f 6d"
+    },
+    {
+      "token_id": 362,
+      "token_text": "\",\"",
+      "token_bytes_hex": "22 2c 22"
+    },
+    {
+      "token_id": 8064,
+      "token_text": "b",
+      "token_bytes_hex": "62"
+    },
+    {
+      "token_id": 4949,
+      "token_text": "rightness",
+      "token_bytes_hex": "72 69 67 68 74 6e 65 73 73"
+    },
+    {
+      "token_id": 5112,
+      "token_text": "\"],\"",
+      "token_bytes_hex": "22 5d 2c 22"
+    },
+    {
+      "token_id": 396,
+      "token_text": "ad",
+      "token_bytes_hex": "61 64"
+    },
+    {
+      "token_id": 1740,
+      "token_text": "ditional",
+      "token_bytes_hex": "64 69 74 69 6f 6e 61 6c"
+    },
+    {
+      "token_id": 4185,
+      "token_text": "Pro",
+      "token_bytes_hex": "50 72 6f"
+    },
+    {
+      "token_id": 1014,
+      "token_text": "perties",
+      "token_bytes_hex": "70 65 72 74 69 65 73"
+    },
+    {
+      "token_id": 314,
+      "token_text": "\":",
+      "token_bytes_hex": "22 3a"
+    },
+    {
+      "token_id": 1325,
+      "token_text": "false",
+      "token_bytes_hex": "66 61 6c 73 65"
+    },
+    {
+      "token_id": 1270,
+      "token_text": "}}]",
+      "token_bytes_hex": "7d 7d 5d"
+    },
+    {
+      "token_id": 9,
+      "token_text": "</tools>",
+      "token_bytes_hex": "3c 2f 74 6f 6f 6c 73 3e"
+    },
+    {
+      "token_id": 24,
+      "token_text": "\n",
+      "token_bytes_hex": "0a"
+    },
+    {
+      "token_id": 6794,
+      "token_text": "turn",
+      "token_bytes_hex": "74 75 72 6e"
+    },
+    {
+      "token_id": 303,
+      "token_text": "b",
+      "token_bytes_hex": "62"
+    },
+    {
+      "token_id": 4949,
+      "token_text": "rightness",
+      "token_bytes_hex": "72 69 67 68 74 6e 65 73 73"
+    },
+    {
+      "token_id": 330,
+      "token_text": "to",
+      "token_bytes_hex": "74 6f"
+    },
+    {
+      "token_id": 2289,
+      "token_text": "0",
+      "token_bytes_hex": "30"
+    },
+    {
+      "token_id": 301,
+      "token_text": "in",
+      "token_bytes_hex": "69 6e"
+    },
+    {
+      "token_id": 4928,
+      "token_text": "room",
+      "token_bytes_hex": "72 6f 6f 6d"
+    },
+    {
+      "token_id": 397,
+      "token_text": "1",
+      "token_bytes_hex": "31"
+    },
+    {
+      "token_id": 5,
+      "token_text": "<|im_end|>",
+      "token_bytes_hex": "3c 7c 69 6d 5f 65 6e 64 7c 3e"
+    },
+    {
+      "token_id": 24,
+      "token_text": "\n",
+      "token_bytes_hex": "0a"
+    },
+    {
+      "token_id": 4,
+      "token_text": "<|im_start|>",
+      "token_bytes_hex": "3c 7c 69 6d 5f 73 74 61 72 74 7c 3e"
+    },
+    {
+      "token_id": 612,
+      "token_text": "assistant",
+      "token_bytes_hex": "61 73 73 69 73 74 61 6e 74"
+    },
+    {
+      "token_id": 24,
+      "token_text": "\n",
+      "token_bytes_hex": "0a"
+    }
+  ]
+  

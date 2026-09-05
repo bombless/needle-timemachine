@@ -3,7 +3,10 @@ import { init, defaultDevice, numpy as np } from '@jax-js/jax';
 
 const MAGIC = 'NEEDLEJS1';
 const HEADER_BYTES = 4;
-const D = np.float32;
+// Run the numerical forward/verification path in fp64. The checkpoint is
+// stored as fp32, but casting weights and generated constants to fp64 makes
+// the actual arithmetic (including reductions) execute in double precision.
+const D = np.float64;
 
 function normalizeConfig(c) {
   const numeric = ['vocab_size','d_model','attn_dim','num_heads','num_kv_heads','num_layers','max_seq_len','pad_token_id','contrastive_dim','rope_theta','engram_heads','engram_slots','mhc_lanes','kv_window','kv_bits','act_bits','scan_unroll'];
@@ -14,6 +17,57 @@ function normalizeConfig(c) {
   out.flash = out.flash === true || out.flash === 'True' || out.flash === 'true';
   out.remat = out.remat === true || out.remat === 'True' || out.remat === 'true';
   return out;
+}
+
+function parseTokenList(value, source = 'tokens') {
+  let parsed = value;
+  if (!Array.isArray(value)) {
+    const text = String(value).trim();
+    if (text.startsWith('[')) {
+      try { parsed = JSON.parse(text); }
+      catch (err) { throw new Error(`invalid ${source} JSON: ${err.message}`); }
+    } else {
+      parsed = text.split(/[\s,]+/).filter(Boolean);
+    }
+  }
+  if (!Array.isArray(parsed)) throw new Error(`${source} must be an array of token ids`);
+  const tokens = parsed.map((item, i) => {
+    const id = item && typeof item === 'object' ? item.token_id : item;
+    const n = Number(id);
+    if (!Number.isInteger(n) || n < 0) throw new Error(`invalid token id at ${source}[${i}]: ${id}`);
+    return n;
+  });
+  if (!tokens.length) throw new Error(`${source} must contain at least one token`);
+  return tokens;
+}
+
+function readPrefill(path) {
+  let value;
+  try { value = JSON.parse(fs.readFileSync(path, 'utf8')); }
+  catch (err) { throw new Error(`unable to read prefill file ${path}: ${err.message}`); }
+  return parseTokenList(value, path);
+}
+
+function loadTokenMetadata(header) {
+  if (Array.isArray(header.token_metadata)) return header.token_metadata;
+  const vocabPath = process.env.NEEDLE_TOKENIZER_VOCAB || 'needle/needle/model/tokenizer.vocab';
+  try {
+    const lines = fs.readFileSync(vocabPath, 'utf8').split(/\r?\n/);
+    return lines.filter(line => line.length > 0).map((line, tokenId) => {
+      const piece = line.split('\t', 1)[0];
+      const byteMatch = piece.match(/^<0x([0-9A-Fa-f]{2})>$/);
+      const tokenText = byteMatch
+        ? String.fromCodePoint(parseInt(byteMatch[1], 16))
+        : piece.replaceAll(String.fromCodePoint(0x2581), ' ');
+      return {
+        token_id: tokenId,
+        token_text: tokenText,
+        token_bytes_hex: Buffer.from(tokenText, 'utf8').toString('hex').match(/../g)?.join(' ') || '',
+      };
+    });
+  } catch (_) {
+    return [];
+  }
 }
 
 function readWeights(path = 'weights.bin') {
@@ -29,12 +83,16 @@ function readWeights(path = 'weights.bin') {
     const bytes = buf.subarray(dataStart + e.offset, dataStart + e.offset + e.nbytes);
     const raw = new Float32Array(bytes.length / 4);
     raw.set(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength).buffer ? new Float32Array(Uint8Array.from(bytes).buffer) : []);
-    weights[e.name] = np.array(raw, { dtype: D }).reshape(e.shape);
+    const raw64 = new Float64Array(raw.length);
+    for (let i = 0; i < raw.length; ++i) raw64[i] = raw[i];
+    weights[e.name] = np.array(raw64, { dtype: D }).reshape(e.shape);
   }
   let reference = null;
   if (header.reference) {
     const r = buf.subarray(dataStart + header.reference.offset, dataStart + header.reference.offset + header.reference.nbytes);
-    reference = new Float32Array(Uint8Array.from(r).buffer);
+    const reference32 = new Float32Array(Uint8Array.from(r).buffer);
+    reference = new Float64Array(reference32.length);
+    for (let i = 0; i < reference32.length; ++i) reference[i] = reference32[i];
   }
   return { header: { ...header, reference }, weights };
 }
@@ -42,7 +100,7 @@ function readWeights(path = 'weights.bin') {
 function sl(x, starts, ends) {
   return x.ref.slice(...starts.map((start, i) => [start, ends[i]]));
 }
-function scalar(x) { return np.array(new Float32Array([x]), { dtype: D }).reshape([]); }
+function scalar(x) { return np.array(new Float64Array([x]), { dtype: D }).reshape([]); }
 function sigmoid(x) { return np.divide(1, np.add(1, np.exp(np.negative(x)))); }
 function silu(x) { return x.mul(sigmoid(x.ref)); }
 function rmsUnit(x, eps = 1e-6) {
@@ -87,8 +145,8 @@ function rope(x, cos, sin) {
 }
 function ropeFreqs(headDim, seqLen, theta) {
   const half = Math.floor(headDim / 2);
-  const c = new Float32Array(seqLen * half);
-  const s = new Float32Array(seqLen * half);
+  const c = new Float64Array(seqLen * half);
+  const s = new Float64Array(seqLen * half);
   for (let t = 0; t < seqLen; ++t) for (let j = 0; j < half; ++j) {
     const freq = 1 / Math.pow(theta, (2 * j) / headDim);
     const a = t * freq;
@@ -110,7 +168,7 @@ function walsh(n) {
     }
     h = next;
   }
-  const a = new Float32Array(n * n), s = Math.sqrt(n);
+  const a = new Float64Array(n * n), s = Math.sqrt(n);
   for (let i = 0; i < n; ++i) for (let j = 0; j < n; ++j) a[i * n + j] = h[i][j] / s;
   return np.array(a, { dtype: D }).reshape([n, n]);
 }
@@ -162,7 +220,7 @@ function makeEngramKV(tokens, maskKeep, cfg, w) {
       const one = sl(table.ref, [j, 0, 0], [j + 1, table.shape[1], table.shape[2]]).reshape([table.shape[1], table.shape[2]]);
       const gathered = np.take(one, idx[j].ref, 0);
       const order = orders[Math.floor(j / heads)];
-      const ok = np.array(new Float32Array(Array.from({ length: tokens.shape[1] }, (_, t) => t >= order - 1 ? 1 : 0)), { dtype: D }).reshape([1, tokens.shape[1], 1]);
+      const ok = np.array(new Float64Array(Array.from({ length: tokens.shape[1] }, (_, t) => t >= order - 1 ? 1 : 0)), { dtype: D }).reshape([1, tokens.shape[1], 1]);
       fetched.push(gathered.mul(ok));
     }
     let e = np.stack(fetched, 2).reshape([tokens.shape[0], tokens.shape[1], numTables * subDim]);
@@ -180,7 +238,7 @@ function makeEngramKV(tokens, maskKeep, cfg, w) {
     for (let j = 0; j < 4; ++j) {
       const shifted = shiftRight(v.ref, j * Math.max(...orders));
       const tap = sl(taps.ref, [j, 0], [j + 1, cfg.d_model]).reshape([1, 1, cfg.d_model]);
-      const ok = np.array(new Float32Array(Array.from({ length: tokens.shape[1] }, (_, t) => t >= j * maxOrder ? 1 : 0)), { dtype: D }).reshape([1, tokens.shape[1], 1]);
+      const ok = np.array(new Float64Array(Array.from({ length: tokens.shape[1] }, (_, t) => t >= j * maxOrder ? 1 : 0)), { dtype: D }).reshape([1, tokens.shape[1], 1]);
       vv = vv.add(shifted.mul(tap).mul(ok));
     }
     ks.push(k); vs.push(vv);
@@ -304,12 +362,18 @@ function forward(tokens, cfg, w) {
 }
 
 async function main() {
-  const { header, weights } = readWeights(process.argv[2] || 'weights.bin');
+  const args = process.argv.slice(2);
+  const positional = args.find(x => !x.startsWith('-'));
+  const { header, weights } = readWeights(positional || 'weights.bin');
   const cfg = normalizeConfig(header.config);
   const tokensArg = process.argv.find(x => x.startsWith('--tokens='));
-  const tokens = tokensArg
-    ? tokensArg.slice('--tokens='.length).split(',').filter(Boolean).map(Number)
-    : (header.input_tokens || [1, 2, 3, 4]);
+  const prefillArg = process.argv.find(x => x.startsWith('--prefill-file='));
+  if (tokensArg && prefillArg) throw new Error('use either --tokens or --prefill-file, not both');
+  const tokens = prefillArg
+    ? readPrefill(prefillArg.slice('--prefill-file='.length))
+    : tokensArg
+      ? parseTokenList(tokensArg.slice('--tokens='.length), '--tokens')
+      : (header.input_tokens || [1, 2, 3, 4]);
   const backend = (await init('wasm')).includes('wasm') ? 'wasm' : 'cpu';
   defaultDevice(backend);
   const tokenArray = np.array(Int32Array.from(tokens), { dtype: np.int32 }).reshape([1, tokens.length]);
@@ -332,7 +396,16 @@ async function main() {
     cosine = dot / Math.sqrt(na * nb);
   }
   const final = Array.from(out.slice((tokens.length - 1) * cfg.vocab_size, tokens.length * cfg.vocab_size));
-  let top = final.map((v, i) => [v, i]).sort((a, b) => b[0] - a[0]).slice(0, 5);
+  const tokenMetadata = loadTokenMetadata(header);
+  let top = final.map((v, i) => {
+    const metadata = tokenMetadata[i] || {};
+    return {
+      token_id: i,
+      token_text: metadata.token_text || '',
+      token_bytes_hex: metadata.token_bytes_hex || '',
+      logit: v,
+    };
+  }).sort((a, b) => b.logit - a.logit).slice(0, 5);
   console.log(`backend:    ${backend}`);
   console.log(`tokens:     ${tokens.length}`);
   console.log(`logits:     ${JSON.stringify(logits.shape)}`);
