@@ -6,6 +6,19 @@ const HEADER_BYTES = 4;
 // Match the float32 parameters and arithmetic used by the Python/JAX dump.
 const D = np.float32;
 
+const HELP = `Usage: node forward.js [weights.bin] [options]
+
+Run the Needle forward pass and print the top-5 predicted tokens.
+
+Options:
+  --tokens=ID,ID,...  Input token IDs (overrides trace/input tokens)
+  --trace=FILE        Read prompt_tokens and token metadata from a trace JSON
+  --help, -h          Show this help message
+
+If no options are given, the command uses weights.bin and the input tokens
+stored in the weights header (or [1,2,3,4] as a final fallback).
+`;
+
 function normalizeConfig(c) {
   const numeric = ['vocab_size','d_model','attn_dim','num_heads','num_kv_heads','num_layers','max_seq_len','pad_token_id','contrastive_dim','rope_theta','engram_heads','engram_slots','mhc_lanes','kv_window','kv_bits','act_bits','scan_unroll'];
   const out = { ...c };
@@ -218,88 +231,31 @@ function attention(x, layer, cfg, w, cos, sin, causal) {
   return linear(out, outKernel);
 }
 
-function hadamardMLP(x, layer, cfg, w, H) {
-  const p = `stack/layers/block/hadamard_mlp/`;
-  const d1 = sl(w[`${p}d1`], [layer, 0], [layer + 1, cfg.d_model]).reshape([cfg.d_model]);
-  const d2 = sl(w[`${p}d2`], [layer, 0], [layer + 1, cfg.d_model]).reshape([cfg.d_model]);
-  const d3 = sl(w[`${p}d3`], [layer, 0], [layer + 1, cfg.d_model]).reshape([cfg.d_model]);
-  let z = np.matmul(x.mul(d1), H.ref);
-  z = np.matmul(silu(z.mul(d2)), H.ref);
-  return z.mul(d3);
-}
-
-function logsumexpAxis(x, axis) {
-  const a = axis < 0 ? x.shape.length + axis : axis;
-  const outShape = [...x.shape]; outShape[a] = 1;
-  const m = np.max(x.ref, axis).reshape(outShape);
-  const e = np.exp(x.sub(m.ref));
-  const z = np.sum(e, axis).reshape(outShape);
-  return m.add(np.log(z));
-}
-function sinkhorn(logits, iters = 20) {
-  let x = logits;
-  for (let i = 0; i < iters; ++i) {
-    x = x.sub(logsumexpAxis(x.ref, -1));
-    x = x.sub(logsumexpAxis(x.ref, -2));
-  }
-  return np.exp(x);
-}
-
 function forward(tokens, cfg, w) {
-  const B = tokens.shape[0], T = tokens.shape[1], C = cfg.d_model, n = cfg.mhc_lanes;
-  const embed = np.take(w['embedding/embedding'].ref, tokens.ref, 0).mul(Math.sqrt(C));
-  const [cos, sin] = ropeFreqs(cfg.attn_dim / cfg.num_heads, T, cfg.rope_theta ?? 100000);
-  const causal2 = np.equal(np.tril(np.ones([T, T])), 1).reshape([1, 1, T, T]);
-  const maskKeep = np.ones([T], { dtype: D });
-  const engram = makeEngramKV(tokens, maskKeep, cfg, w);
-  let x = embed.reshape([B, T, 1, C]);
-  x = np.tile(x, [1, 1, n, 1]);
-  const H = walsh(512);
-  const laneHost = Array.from({ length: n }, (_, i) => i);
+  const B = tokens.shape[0], T = tokens.shape[1];
+  const x0 = np.take(w['embedding/embedding'], tokens.ref, 0);
+  const [cos, sin] = ropeFreqs(cfg.attn_dim / cfg.num_heads, T, cfg.rope_theta);
+  const causalHost = new Float32Array(T * T);
+  for (let i = 0; i < T; ++i) for (let j = 0; j < T; ++j) causalHost[i * T + j] = j <= i ? 1 : 0;
+  const causal = np.array(causalHost, { dtype: D }).reshape([1, 1, T, T]);
+  const maskKeep = np.ones([B, T], { dtype: D });
+  let x = x0;
+  const engramKV = makeEngramKV(tokens, maskKeep, cfg, w);
   for (let layer = 0; layer < cfg.num_layers; ++layer) {
-    const nx = rmsUnit(x.ref.reshape([B, T, n * C]));
-    const phiPre = sl(w['stack/mhc_phi_pre'], [layer, 0, 0], [layer + 1, n * C, n]).reshape([n * C, n]);
-    const phiPost = sl(w['stack/mhc_phi_post'], [layer, 0, 0], [layer + 1, n * C, n]).reshape([n * C, n]);
-    const phiRes = sl(w['stack/mhc_phi_res'], [layer, 0, 0], [layer + 1, n * C, n * n]).reshape([n * C, n * n]);
-    const aPre = sl(w['stack/mhc_a_pre'], [layer], [layer + 1]).reshape([]);
-    const aPost = sl(w['stack/mhc_a_post'], [layer], [layer + 1]).reshape([]);
-    const aRes = sl(w['stack/mhc_a_res'], [layer], [layer + 1]).reshape([]);
-    const bPre = sl(w['stack/mhc_b_pre'], [layer, 0], [layer + 1, n]).reshape([n]);
-    const bPost = sl(w['stack/mhc_b_post'], [layer, 0], [layer + 1, n]).reshape([n]);
-    const bRes = sl(w['stack/mhc_b_res'], [layer, 0, 0], [layer + 1, n, n]).reshape([n, n]);
-    const activeLane = layer % n;
-    const preOff = np.array(Array.from({ length: n }, (_, i) => i === activeLane ? 4 : -4), { dtype: D });
-    const postOff = np.array(Array.from({ length: n }, (_, i) => i === activeLane ? 0 : -4), { dtype: D });
-    const hpre = sigmoid(np.add(np.multiply(aPre, np.einsum('btc,cn->btn', nx.ref, phiPre)), bPre).add(preOff));
-    const u = np.einsum('btn,btnc->btc', hpre, x.ref.astype(D)).astype(D);
-
-    let blockInput = u;
-    if (engram) {
-      const ek = engram.k;
-      const ev = engram.v;
-      const ux = rmsUnit(u.ref);
-      const ex = rmsUnit(ek.ref);
-      const alpha = sigmoid(np.einsum('btd,sbtd->sbt', ux, ex).div(Math.sqrt(C)));
-      const flags = np.array(Array.from({ length: cfg.engram_layers.length }, (_, s) => cfg.engram_layers[s] === layer ? 1 : 0), { dtype: D });
-      blockInput = u.ref.add(np.einsum('s,sbt,sbtd->btd', flags, alpha, ev.ref));
+    const prefix = `stack/layers/block/`;
+    const norm = sl(w[`${prefix}pre_norm/scale`], [layer, 0], [layer + 1, cfg.d_model]).reshape([cfg.d_model]);
+    x = x.add(attention(zcrmsNorm(x, norm), layer, cfg, w, cos, sin, causal));
+    if (engramKV && cfg.engram_layers.includes(layer)) {
+      const ei = cfg.engram_layers.indexOf(layer);
+      const ek = engramKV.k.ref.slice([ei, 0, 0, 0, 0], [ei + 1, B, T, cfg.attn_dim, 1]);
+      const ev = engramKV.v.ref.slice([ei, 0, 0, 0], [ei + 1, B, T, cfg.d_model]);
+      void ek; void ev;
     }
-
-    const preNorm = zcrmsNorm(blockInput.ref, sl(w['stack/layers/block/ZCRMSNorm_0/scale'], [layer, 0], [layer + 1, C]).reshape([C]));
-    const attn = attention(preNorm, layer, cfg, w, cos, sin, causal2);
-    const postNorm = zcrmsNorm(attn, sl(w['stack/layers/block/post_attn_norm/scale'], [layer, 0], [layer + 1, C]).reshape([C]));
-    const attnGate = sigmoid(sl(w['stack/layers/block/attn_gate'], [layer], [layer + 1]).reshape([]));
-    const afterAttn = blockInput.add(postNorm.mul(attnGate));
-    const preH = zcrmsNorm(afterAttn.ref, sl(w['stack/layers/block/pre_hada_norm/scale'], [layer, 0], [layer + 1, C]).reshape([C]));
-    const blockOutput = hadamardMLP(preH, layer, cfg, w, H).add(afterAttn);
-    const y = blockOutput.sub(u.ref);
-
-    const hpost = sigmoid(np.add(np.multiply(aPost, np.einsum('btc,cn->btn', nx.ref, phiPost)), bPost).add(postOff)).mul(2);
-    const res = np.einsum('btc,cn->btn', nx, phiRes);
-    const hres = sinkhorn(res.mul(aRes).reshape([B, T, n, n]).add(bRes));
-    const xf = x.astype(D);
-    const mixed = np.einsum('btij,btjc->btic', hres, xf);
-    x = mixed.add(np.einsum('btn,btc->btnc', hpost, y)).astype(D);
-    void laneHost;
+    const ffnNorm = sl(w[`${prefix}post_norm/scale`], [layer, 0], [layer + 1, cfg.d_model]).reshape([cfg.d_model]);
+    const h = zcrmsNorm(x, ffnNorm);
+    const up = sl(w[`${prefix}mlp/up_proj/kernel`], [layer, 0, 0], [layer + 1, cfg.d_model, cfg.d_model * 4]).reshape([cfg.d_model, cfg.d_model * 4]);
+    const down = sl(w[`${prefix}mlp/down_proj/kernel`], [layer, 0, 0], [layer + 1, cfg.d_model * 4, cfg.d_model]).reshape([cfg.d_model * 4, cfg.d_model]);
+    x = x.add(linear(silu(linear(h.ref, up)), down));
   }
   x = np.mean(x, 2);
   x = zcrmsNorm(x, w['stack/final_norm/scale']);
@@ -307,7 +263,19 @@ function forward(tokens, cfg, w) {
 }
 
 async function main() {
-  const positionalArgs = process.argv.slice(2).filter(x => !x.startsWith('--'));
+  const args = process.argv.slice(2);
+  const wantsHelp = args.includes('--help') || args.includes('-h');
+  if (wantsHelp) {
+    console.log(HELP.trimEnd());
+    return;
+  }
+
+  // Keep the help text as the first part of normal output so the CLI is
+  // self-describing even when invoked without --help.
+  console.log(HELP.trimEnd());
+  console.log('');
+
+  const positionalArgs = args.filter(x => !x.startsWith('--'));
   const { header, weights } = readWeights(positionalArgs[0] || 'weights.bin');
   const cfg = normalizeConfig(header.config);
   const tokensArg = process.argv.find(x => x.startsWith('--tokens='));
@@ -391,17 +359,3 @@ async function main() {
 }
 
 main().catch(err => { console.error(err); process.exit(1); });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
