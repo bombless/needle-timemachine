@@ -8,6 +8,22 @@ const HEADER_BYTES = 4;
 // the actual arithmetic (including reductions) execute in double precision.
 const D = np.float64;
 
+const HELP = `Usage: node forward.js [weights.bin] [options]
+
+Run the Needle forward/verification path and print the final-token logits.
+
+Options:
+  --tokens=<ids>          Input token ids, as JSON or whitespace/comma-separated ids
+  --prefill-file=<path>   Read input token ids from a JSON/text file
+  --help                  Show this help message
+
+If neither --tokens nor --prefill-file is provided, input_tokens from the
+weights header are used, falling back to [1, 2, 3, 4].
+
+The optional positional argument selects the weights file and defaults to
+weights.bin.
+`;
+
 function normalizeConfig(c) {
   const numeric = ['vocab_size','d_model','attn_dim','num_heads','num_kv_heads','num_layers','max_seq_len','pad_token_id','contrastive_dim','rope_theta','engram_heads','engram_slots','mhc_lanes','kv_window','kv_bits','act_bits','scan_unroll'];
   const out = { ...c };
@@ -363,11 +379,18 @@ function forward(tokens, cfg, w) {
 
 async function main() {
   const args = process.argv.slice(2);
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log(HELP.trimEnd());
+    return;
+  }
+  // Keep the help text at the start of normal output too: the CLI has only a
+  // few optional switches, so this makes invocation self-documenting.
+  console.log(HELP.trimEnd());
   const positional = args.find(x => !x.startsWith('-'));
   const { header, weights } = readWeights(positional || 'weights.bin');
   const cfg = normalizeConfig(header.config);
-  const tokensArg = process.argv.find(x => x.startsWith('--tokens='));
-  const prefillArg = process.argv.find(x => x.startsWith('--prefill-file='));
+  const tokensArg = args.find(x => x.startsWith('--tokens='));
+  const prefillArg = args.find(x => x.startsWith('--prefill-file='));
   if (tokensArg && prefillArg) throw new Error('use either --tokens or --prefill-file, not both');
   const tokens = prefillArg
     ? readPrefill(prefillArg.slice('--prefill-file='.length))
@@ -417,17 +440,3 @@ async function main() {
 }
 
 main().catch(err => { console.error(err); process.exit(1); });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
