@@ -3,196 +3,58 @@ import { numpy as np } from 'https://esm.sh/@jax-js/jax@0.1.23'
 let trace = { events: [] }, pos = 0, timer = null, weights = null
 const $ = id => document.getElementById(id)
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[c]))
-
-async function load () {
-  trace = await (await fetch('/trace.json')).json()
-  $('summary').textContent = `${trace.events.length} events · ${trace.checkpoint || 'unknown checkpoint'}`
-  $('slider').max = Math.max(0, trace.events.length - 1)
-  drawDots(); renderPrompt(); render(0)
-}
-function drawDots () {
-  const t = $('track'); t.innerHTML = ''
-  trace.events.forEach((e, i) => {
-    const d = document.createElement('button')
-    d.className = 'dot' + (e.op === 'layer_output' ? ' layer' : '')
-    d.title = `${e.step}: ${e.op}`
-    d.style.left = (trace.events.length < 2 ? 50 : i * 100 / (trace.events.length - 1)) + '%'
-    d.onclick = () => render(i); t.appendChild(d)
-  })
-}
-function decode (p) {
-  if (!p || p.encoding !== 'base64-f32-le') throw new Error('unsupported tensor payload')
-  const raw = Uint8Array.from(atob(p.data), c => c.charCodeAt(0))
-  return np.array(new Float32Array(raw.buffer), { dtype: np.float32 }).reshape(p.shape)
-}
-async function fingerprint (a) {
-  const sum = await a.ref.sum().jsAsync()
-  const sq = await a.mul(a.ref).sum().jsAsync()
-  return { sum: Number(sum), sumSquares: Number(sq) }
-}
-function closeEnough (a, b, scale = 1) {
-  return Math.abs(a - b) <= 1e-4 * Math.max(1, Math.abs(b), scale)
-}
-
-async function verifyLayer () {
-  const e = trace.events[pos]
-  if (e.op !== 'layer_output' || !e.values?.input || !e.values?.output) {
-    $('verifyStatus').className = 'status warn'; $('verifyStatus').textContent = '该事件没有可重放的 layer input/output payload。'; return
-  }
-  const btn = $('verify'); btn.disabled = true; btn.textContent = '验算中…'; $('verifyStatus').className = 'status'
-  try {
-    const input = decode(e.values.input), output = decode(e.values.output)
-    const fi = await fingerprint(input), fo = await fingerprint(output)
-    const ri = e.values.input, ro = e.values.output
-    const inputOk = closeEnough(fi.sum, ri.sum, Math.sqrt(Math.abs(fi.sumSquares))) && closeEnough(fi.sumSquares, ri.sum_squares, Math.abs(ri.sum_squares))
-    const outputOk = closeEnough(fo.sum, ro.sum, Math.sqrt(Math.abs(fo.sumSquares))) && closeEnough(fo.sumSquares, ro.sum_squares, Math.abs(ro.sum_squares))
-    let continuity = true, text = ''
-    const prev = trace.events.find(x => x.op === 'layer_output' && Number(x.layer) === Number(e.layer) - 1)
-    if (prev?.values?.output) {
-      const delta = await np.abs(decode(prev.values.output).sub(decode(e.values.input))).max().jsAsync()
-      continuity = Number(delta) <= 1e-5; text = `；与上一层输出最大差 ${Number(delta).toExponential(3)}`
-    } else if (Number(e.layer) === 0) {
-      const emb = trace.events.find(x => x.op === 'embedding_output')
-      if (emb?.values?.output) {
-        const delta = await np.abs(decode(emb.values.output).sub(decode(e.values.input))).max().jsAsync()
-        continuity = Number(delta) <= 1e-5; text = `；与 embedding 输出最大差 ${Number(delta).toExponential(3)}`
-      }
-    }
-    const ok = inputOk && outputOk && continuity
-    $('verifyStatus').className = 'status ' + (ok ? 'ok' : 'bad')
-    $('verifyStatus').innerHTML = ok ? `<b>✓ JAX.js 验算通过</b>：输入/输出指纹与 Python trace 一致${text}。` : `<b>✗ 验算失败</b>：${!inputOk ? 'input fingerprint 不一致；' : ''}${!outputOk ? 'output fingerprint 不一致；' : ''}${!continuity ? '层间输入/输出不连续。' : ''}`
-  } catch (err) {
-    $('verifyStatus').className = 'status bad'; $('verifyStatus').textContent = 'JAX.js 验算异常：' + err.message
-  } finally { btn.disabled = false; btn.textContent = 'JAX.js 验算这一层' }
-}
-
-function render (i) {
-  if (!trace.events.length) return
-  pos = Math.max(0, Math.min(i, trace.events.length - 1)); const e = trace.events[pos]
-  $('slider').value = pos; $('title').textContent = `Step ${e.step} · ${e.op}`
-  $('details').innerHTML = [['layer', e.layer ?? '—'], ['name', e.name ?? '—'], ['phase', e.phase], ['snapshot', e.snapshot_id ?? '—']].map(([k, v]) => `<div class="muted">${k}</div><div>${esc(v)}</div>`).join('')
-  $('tensors').textContent = JSON.stringify(e.tensors || {}, null, 2); $('metadata').textContent = JSON.stringify(e.metadata || {}, null, 2)
-  const isLayer = e.op === 'layer_output'; $('verify').disabled = !isLayer; $('layerTitle').textContent = isLayer ? `Layer ${e.layer} verification` : 'Layer verification'
-  if (isLayer) $('verifyStatus').textContent = '点击按钮，用 jax-js 重放本层记录的 input/output。'
-  document.querySelectorAll('.dot').forEach((d, j) => d.classList.toggle('current', j === pos)); renderProbabilities(e)
-}
-function renderPrompt () {
-  const xs = trace.prompt_tokens || []
-  $('promptTokens').innerHTML = xs.length ? '<table class="token-table"><tr><th>#</th><th>ID</th><th>文本</th></tr>' + xs.map((x, i) => `<tr><td>${i + 1}</td><td>${esc(x.token_id)}</td><td class="mono">${esc(x.token_text) || '∅'}</td></tr>`).join('') + '</table>' : '—'
-}
-function renderProbabilities (e) {
-  const xs = e?.metadata?.top_k
-  if (!Array.isArray(xs) || !xs.length) { $('probabilities').textContent = '—'; return }
-  $('probabilities').innerHTML = '<table class="probability-table"><tr><th>Rank</th><th>ID</th><th>文本</th><th>概率</th><th>分布</th></tr>' + xs.map((x, i) => { const p = Number(x.probability) || 0; return `<tr><td>${i + 1}</td><td>${esc(x.token_id)}</td><td>${esc(x.token_text) || '∅'}</td><td>${(p * 100).toFixed(4)}%</td><td><div class="probbar"><div class="fill" style="width:${Math.min(100, p * 100)}%"></div></div></td></tr>` }).join('') + '</table>'
-}
+async function load () { trace = await (await fetch('/trace.json')).json(); $('summary').textContent = `${trace.events.length} events · ${trace.checkpoint || 'unknown checkpoint'}`; $('slider').max = Math.max(0, trace.events.length - 1); drawDots(); renderPrompt(); render(0) }
+function drawDots () { const t = $('track'); t.innerHTML = ''; trace.events.forEach((e, i) => { const d = document.createElement('button'); d.className = 'dot' + (e.op === 'layer_output' ? ' layer' : ''); d.title = `${e.step}: ${e.op}`; d.style.left = (trace.events.length < 2 ? 50 : i * 100 / (trace.events.length - 1)) + '%'; d.onclick = () => render(i); t.appendChild(d) }) }
+function decode (p) { if (!p || p.encoding !== 'base64-f32-le') throw new Error('unsupported tensor payload'); const raw = Uint8Array.from(atob(p.data), c => c.charCodeAt(0)); return np.array(new Float32Array(raw.buffer), { dtype: np.float32 }).reshape(p.shape) }
+async function fingerprint (a) { const sum = await a.ref.sum().jsAsync(); const sq = await a.mul(a.ref).sum().jsAsync(); return { sum: Number(sum), sumSquares: Number(sq) } }
+function closeEnough (a, b, scale = 1) { return Math.abs(a - b) <= 1e-4 * Math.max(1, Math.abs(b), scale) }
+async function verifyLayer () { const e = trace.events[pos]; if (e.op !== 'layer_output' || !e.values?.input || !e.values?.output) { $('verifyStatus').className = 'status warn'; $('verifyStatus').textContent = '该事件没有可重放的 layer input/output payload。'; return }; const btn = $('verify'); btn.disabled = true; btn.textContent = '验算中…'; $('verifyStatus').className = 'status'; try { const input = decode(e.values.input), output = decode(e.values.output), fi = await fingerprint(input), fo = await fingerprint(output), ri = e.values.input, ro = e.values.output; const inputOk = closeEnough(fi.sum, ri.sum, Math.sqrt(Math.abs(fi.sumSquares))) && closeEnough(fi.sumSquares, ri.sum_squares, Math.abs(ri.sum_squares)), outputOk = closeEnough(fo.sum, ro.sum, Math.sqrt(Math.abs(fo.sumSquares))) && closeEnough(fo.sumSquares, ro.sum_squares, Math.abs(ro.sum_squares)); let continuity = true, text = ''; const prev = trace.events.find(x => x.op === 'layer_output' && Number(x.layer) === Number(e.layer) - 1); if (prev?.values?.output) { const delta = await np.abs(decode(prev.values.output).sub(decode(e.values.input))).max().jsAsync(); continuity = Number(delta) <= 1e-5; text = `；与上一层输出最大差 ${Number(delta).toExponential(3)}` } else if (Number(e.layer) === 0) { const emb = trace.events.find(x => x.op === 'embedding_output'); if (emb?.values?.output) { const delta = await np.abs(decode(emb.values.output).sub(decode(e.values.input))).max().jsAsync(); continuity = Number(delta) <= 1e-5; text = `；与 embedding 输出最大差 ${Number(delta).toExponential(3)}` } } const ok = inputOk && outputOk && continuity; $('verifyStatus').className = 'status ' + (ok ? 'ok' : 'bad'); $('verifyStatus').innerHTML = ok ? `<b>✓ JAX.js 验算通过</b>：输入/输出指纹与 Python trace 一致${text}。` : `<b>✗ 验算失败</b>：${!inputOk ? 'input fingerprint 不一致；' : ''}${!outputOk ? 'output fingerprint 不一致；' : ''}${!continuity ? '层间输入/输出不连续。' : ''}` } catch (err) { $('verifyStatus').className = 'status bad'; $('verifyStatus').textContent = 'JAX.js 验算异常：' + err.message } finally { btn.disabled = false; btn.textContent = 'JAX.js 验算这一层' } }
+function render (i) { if (!trace.events.length) return; pos = Math.max(0, Math.min(i, trace.events.length - 1)); const e = trace.events[pos]; $('slider').value = pos; $('title').textContent = `Step ${e.step} · ${e.op}`; $('details').innerHTML = [['layer', e.layer ?? '—'], ['name', e.name ?? '—'], ['phase', e.phase], ['snapshot', e.snapshot_id ?? '—']].map(([k, v]) => `<div class="muted">${k}</div><div>${esc(v)}</div>`).join(''); $('tensors').textContent = JSON.stringify(e.tensors || {}, null, 2); $('metadata').textContent = JSON.stringify(e.metadata || {}, null, 2); const isLayer = e.op === 'layer_output'; $('verify').disabled = !isLayer; $('layerTitle').textContent = isLayer ? `Layer ${e.layer} verification` : 'Layer verification'; if (isLayer) $('verifyStatus').textContent = '点击按钮，用 jax-js 重放本层记录的 input/output。'; document.querySelectorAll('.dot').forEach((d, j) => d.classList.toggle('current', j === pos)); renderProbabilities(e) }
+function renderPrompt () { const xs = trace.prompt_tokens || []; $('promptTokens').innerHTML = xs.length ? '<table class="token-table"><tr><th>#</th><th>ID</th><th>文本</th></tr>' + xs.map((x, i) => `<tr><td>${i + 1}</td><td>${esc(x.token_id)}</td><td class="mono">${esc(x.token_text) || '∅'}</td></tr>`).join('') + '</table>' : '—' }
+function renderProbabilities (e) { const xs = e?.metadata?.top_k; if (!Array.isArray(xs) || !xs.length) { $('probabilities').textContent = '—'; return }; $('probabilities').innerHTML = '<table class="probability-table"><tr><th>Rank</th><th>ID</th><th>文本</th><th>概率</th><th>分布</th></tr>' + xs.map((x, i) => { const p = Number(x.probability) || 0; return `<tr><td>${i + 1}</td><td>${esc(x.token_id)}</td><td>${esc(x.token_text) || '∅'}</td><td>${(p * 100).toFixed(4)}%</td><td><div class="probbar"><div class="fill" style="width:${Math.min(100, p * 100)}%"></div></div></td></tr>` }).join('') + '</table>' }
 function step (n) { render(pos + n) }
 function stop () { clearTimeout(timer); timer = null; $('play').textContent = '▶ Play' }
 function play () { if (timer) return; $('play').textContent = '⏸ Pause'; const tick = () => { if (pos >= trace.events.length - 1) return stop(); step(1); timer = setTimeout(tick, 500 / +$('speed').value) }; tick() }
-$('first').onclick = () => render(0); $('prev').onclick = () => step(-1); $('next').onclick = () => step(1); $('last').onclick = () => render(trace.events.length - 1); $('slider').oninput = e => render(+e.target.value); $('verify').onclick = verifyLayer
-$('speed').oninput = e => { $('speedText').textContent = e.target.value + '×'; if (timer) { stop(); play() } }
-$('play').onclick = () => (timer ? stop() : play())
-
+$('first').onclick = () => render(0); $('prev').onclick = () => step(-1); $('next').onclick = () => step(1); $('last').onclick = () => render(trace.events.length - 1); $('slider').oninput = e => render(+e.target.value); $('verify').onclick = verifyLayer; $('speed').oninput = e => { $('speedText').textContent = e.target.value + '×'; if (timer) { stop(); play() } }; $('play').onclick = () => (timer ? stop() : play())
 function w (name) { const value = weights[name]; if (!value) throw new Error('缺少权重: ' + name); return value }
 function dense (x, kernel) { return np.matmul(x, kernel) }
 function rms (x) { const xf = x.astype(np.float32); const sq = xf.mul(xf.ref); return xf.mul(np.sqrt(np.add(np.mean(sq, -1, true), 1e-6)).reciprocal()) }
 function zcrms (x, scale) { return rms(x).mul(np.add(1, scale)) }
 function sigmoid (x) { return np.reciprocal(np.add(1, np.exp(np.negative(x)))) }
 function silu (x) { return x.mul(sigmoid(x.ref)) }
-function rope (x, cos, sin) {
-  const h = x.shape.at(-1) / 2
-  const a = x.slice([0, 0, 0, 0], [x.shape[0], x.shape[1], x.shape[2], h])
-  const b = x.slice([0, 0, 0, h], [x.shape[0], x.shape[1], x.shape[2], x.shape[3]])
-  return np.concatenate([a.mul(cos).sub(b.mul(sin)), b.mul(cos).add(a.mul(sin))], -1)
-}
-function hadamard (n) {
-  let h = [[1]]
-  while (h.length < n) { const m = h.length; const next = Array.from({ length: m * 2 }, () => Array(m * 2)); for (let r = 0; r < m; r++) for (let c = 0; c < m; c++) { const v = h[r][c]; next[r][c] = v; next[r][c + m] = v; next[r + m][c] = v; next[r + m][c + m] = -v } h = next }
-  const flat = new Float32Array(n * n), s = Math.sqrt(n); for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) flat[r * n + c] = h[r][c] / s
-  return np.array(flat, { dtype: np.float32 }).reshape([n, n])
-}
+function rope (x, cos, sin) { const h = x.shape.at(-1) / 2; const a = x.slice([0, 0, 0, 0], [x.shape[0], x.shape[1], x.shape[2], h]); const b = x.slice([0, 0, 0, h], [x.shape[0], x.shape[1], x.shape[2], x.shape[3]]); return np.concatenate([a.mul(cos).sub(b.mul(sin)), b.mul(cos).add(a.mul(sin))], -1) }
+function hadamard (n) { let h = [[1]]; while (h.length < n) { const m = h.length, next = Array.from({ length: m * 2 }, () => Array(m * 2)); for (let r = 0; r < m; r++) for (let c = 0; c < m; c++) { const v = h[r][c]; next[r][c] = v; next[r][c + m] = v; next[r + m][c] = v; next[r + m][c + m] = -v } h = next }; const flat = new Float32Array(n * n), s = Math.sqrt(n); for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) flat[r * n + c] = h[r][c] / s; return np.array(flat, { dtype: np.float32 }).reshape([n, n]) }
 function logsumexpAxis (x, axis) { const m = np.max(x.ref, axis, true); return m.add(np.log(np.sum(np.exp(x.sub(m)), axis, true))) }
-function sinkhorn (x) { for (let i = 0; i < 20; i++) { x = x.sub(logsumexpAxis(x.ref, -1)); x = x.sub(logsumexpAxis(x.ref, -2)) } return np.exp(x) }
+function sinkhorn (x) { for (let i = 0; i < 20; i++) { x = x.sub(logsumexpAxis(x.ref, -1)); x = x.sub(logsumexpAxis(x.ref, -2)) }; return np.exp(x) }
 function shiftRight (x, offset) { if (!offset) return x; return np.concatenate([np.zeros([x.shape[0], offset, x.shape[2]], { dtype: x.dtype }), x.slice([0, 0, 0], [x.shape[0], x.shape[1] - offset, x.shape[2]])], 1) }
-function engramIndices (tokenIds, orders, heads, slots) {
-  const B = 1, T = tokenIds.length, out = []
-  const SEED = 0x9E3779B9 >>> 0, PRIME = 0x01000193 >>> 0
-  for (let oi = 0; oi < orders.length; oi++) for (let h = 0; h < heads; h++) {
-    const seed = Math.imul(SEED, oi * heads + h + 1) >>> 0, a = new Int32Array(B * T)
-    for (let t = 0; t < T; t++) { let acc = seed; for (let j = 0; j < orders[oi]; j++) { const u = j <= t ? (tokenIds[t - j] >>> 0) : 0; acc = Math.imul((acc ^ u) >>> 0, PRIME) >>> 0 } acc = (acc ^ (acc >>> 15)) >>> 0; a[t] = acc % slots }
-    out.push(np.array(a, { dtype: np.int32 }).reshape([B, T]))
-  }
-  return out
-}
+function engramIndices (tokenIds, orders, heads, slots) { const out = [], SEED = 0x9E3779B9 >>> 0, PRIME = 0x01000193 >>> 0; for (let oi = 0; oi < orders.length; oi++) for (let h = 0; h < heads; h++) { const seed = Math.imul(SEED, oi * heads + h + 1) >>> 0, a = new Int32Array(tokenIds.length); for (let t = 0; t < tokenIds.length; t++) { let acc = seed; for (let j = 0; j < orders[oi]; j++) { const u = j <= t ? (tokenIds[t - j] >>> 0) : 0; acc = Math.imul((acc ^ u) >>> 0, PRIME) >>> 0 }; acc = (acc ^ (acc >>> 15)) >>> 0; a[t] = acc % slots }; out.push(np.array(a, { dtype: np.int32 }).reshape([1, tokenIds.length])) }; return out }
 function fullForward (tokenIds, cfg) {
   const B = 1, T = tokenIds.length, C = Number(cfg.d_model), lanes = Number(cfg.mhc_lanes), H = Number(cfg.num_heads), KVH = Number(cfg.num_kv_heads), attnDim = Number(cfg.attn_dim || C), hd = attnDim / H
-  const ids = np.array([tokenIds], { dtype: np.int32 })
-  const embed = np.take(w('embedding.embedding').ref, ids.ref, 0).mul(Math.sqrt(C))
-  const half = Math.floor(hd / 2), freq = np.array(Array.from({ length: T * half }, (_, i) => { const t = Math.floor(i / half), j = i % half; return t / Math.pow(Number(cfg.rope_theta || 100000), (2 * j) / hd) }), { dtype: np.float32 }).reshape([T, half])
-  const cos = np.cos(freq).reshape([1, 1, T, half]), sin = np.sin(freq).reshape([1, 1, T, half])
-  const causal = np.equal(np.tril(np.ones([T, T])), 1).reshape([1, 1, T, T])
-  const orders = (cfg.engram_orders || [2, 3]).map(Number), eHeads = Number(cfg.engram_heads || 0) || Math.max(1, Math.floor(C / (orders.length * 128))), subDim = Math.floor(C / (orders.length * eHeads)), slots = Number(cfg.engram_slots || 8192)
-  const idx = engramIndices(tokenIds, orders, eHeads, slots), engram = []
-  for (let s = 0; s < (cfg.engram_layers || []).length; s++) {
-    const table = w(`engrams.${s}.embedding`), fetched = [], numTables = orders.length * eHeads
-    for (let j = 0; j < numTables; j++) {
-      const one = table.slice([j, 0, 0], [j + 1, slots, subDim]).reshape([slots, subDim])
-      const gathered = np.take(one.ref, idx[j].ref, 0), order = orders[Math.floor(j / eHeads)]
-      const ok = np.greaterEqual(np.arange(T), order - 1).reshape([1, T, 1]); fetched.push(gathered.mul(ok))
-    }
-    const e = np.stack(fetched, 2).reshape([B, T, numTables * subDim])
-    const k = dense(e.ref, w(`engrams.${s}.key_proj.kernel`)), v = dense(e, w(`engrams.${s}.value_proj.kernel`)), taps = w(`engrams.${s}.taps`)
-    let vv = np.zeros(v.shape, { dtype: v.dtype }); const maxOrder = Math.max(...orders)
-    for (let j = 0; j < 4; j++) { const shifted = shiftRight(v.ref, j * maxOrder), tap = taps.slice([j, 0], [j + 1, C]).reshape([1, 1, C]), ok = np.greaterEqual(np.arange(T), j * maxOrder).reshape([1, T, 1]); vv = vv.add(shifted.mul(tap).mul(ok)) }
-    engram.push([k, vv])
-  }
-  let x = np.tile(embed.reshape([B, T, 1, C]), [1, 1, lanes, 1])
-  const Hm = hadamard(1 << Math.ceil(Math.log2(C)))
+  const ids = np.array([tokenIds], { dtype: np.int32 }), embed = np.take(w('embedding.embedding').ref, ids.ref, 0).mul(Math.sqrt(C))
+  const half = Math.floor(hd / 2), cosData = new Float32Array(T * half), sinData = new Float32Array(T * half), theta = Number(cfg.rope_theta || 100000)
+  for (let t = 0; t < T; t++) for (let j = 0; j < half; j++) { const a = t / Math.pow(theta, (2 * j) / hd); cosData[t * half + j] = Math.cos(a); sinData[t * half + j] = Math.sin(a) }
+  const cos = np.array(cosData, { dtype: np.float32 }).reshape([1, 1, T, half]), sin = np.array(sinData, { dtype: np.float32 }).reshape([1, 1, T, half]), causal = np.equal(np.tril(np.ones([T, T])), 1).reshape([1, 1, T, T])
+  const orders = (cfg.engram_orders || [2, 3]).map(Number), eHeads = Number(cfg.engram_heads || 0) || Math.max(1, Math.floor(C / (orders.length * 128))), subDim = Math.floor(C / (orders.length * eHeads)), slots = Number(cfg.engram_slots || 8192), siteLayers = (cfg.engram_layers || []).map(Number), idx = engramIndices(tokenIds, orders, eHeads, slots), engram = []
+  for (let s = 0; s < siteLayers.length; s++) { const table = w(`engrams.${s}.embedding`), fetched = [], numTables = orders.length * eHeads; for (let j = 0; j < numTables; j++) { const one = table.slice([j, 0, 0], [j + 1, slots, subDim]).reshape([slots, subDim]), gathered = np.take(one.ref, idx[j].ref, 0), order = orders[Math.floor(j / eHeads)], ok = np.greaterEqual(np.arange(T), order - 1).reshape([1, T, 1]); fetched.push(gathered.mul(ok)) }; const e = np.stack(fetched, 2).reshape([B, T, numTables * subDim]), k = dense(e.ref, w(`engrams.${s}.key_proj.kernel`)), v = dense(e, w(`engrams.${s}.value_proj.kernel`)), taps = w(`engrams.${s}.taps`); let vv = np.zeros(v.shape, { dtype: v.dtype }), maxOrder = Math.max(...orders); for (let j = 0; j < 4; j++) { const shifted = shiftRight(v.ref, j * maxOrder), tap = taps.slice([j, 0], [j + 1, C]).reshape([1, 1, C]), ok = np.greaterEqual(np.arange(T), j * maxOrder).reshape([1, T, 1]); vv = vv.add(shifted.mul(tap).mul(ok)) }; engram.push([k, vv]) }
+  let x = np.tile(embed.reshape([B, T, 1, C]), [1, 1, lanes, 1]), Hm = hadamard(1 << (C - 1).toString(2).length)
   for (let layer = 0; layer < Number(cfg.num_layers); layer++) {
-    const nx = rms(x.reshape([B, T, lanes * C])), phiPre = w('stack.mhc_phi_pre').slice([layer, 0, 0], [layer + 1, lanes * C, lanes]).reshape([lanes * C, lanes])
-    const phiPost = w('stack.mhc_phi_post').slice([layer, 0, 0], [layer + 1, lanes * C, lanes]).reshape([lanes * C, lanes]), phiRes = w('stack.mhc_phi_res').slice([layer, 0, 0], [layer + 1, lanes * C, lanes * lanes]).reshape([lanes * C, lanes * lanes])
-    const aPre = w('stack.mhc_a_pre').slice([layer]).reshape([]), aPost = w('stack.mhc_a_post').slice([layer]).reshape([]), aRes = w('stack.mhc_a_res').slice([layer]).reshape([])
-    const bPre = w('stack.mhc_b_pre').slice([layer, 0], [layer + 1, lanes]).reshape([lanes]), bPost = w('stack.mhc_b_post').slice([layer, 0], [layer + 1, lanes]).reshape([lanes]), bRes = w('stack.mhc_b_res').slice([layer, 0, 0], [layer + 1, lanes, lanes]).reshape([lanes, lanes])
-    const active = layer % lanes, preOff = np.array(Array.from({ length: lanes }, (_, i) => i === active ? 4 : -4), { dtype: np.float32 }), postOff = np.array(Array.from({ length: lanes }, (_, i) => i === active ? 0 : -4), { dtype: np.float32 })
-    const hpre = sigmoid(np.einsum('btc,cn->btn', nx.ref, phiPre.ref).mul(aPre).add(bPre).add(preOff)), u = np.einsum('btn,btnc->btc', hpre.ref, x.ref)
+    const nx = rms(x.reshape([B, T, lanes * C])), phiPre = w('stack.mhc_phi_pre').slice([layer, 0, 0], [layer + 1, lanes * C, lanes]).reshape([lanes * C, lanes]), phiPost = w('stack.mhc_phi_post').slice([layer, 0, 0], [layer + 1, lanes * C, lanes]).reshape([lanes * C, lanes]), phiRes = w('stack.mhc_phi_res').slice([layer, 0, 0], [layer + 1, lanes * C, lanes * lanes]).reshape([lanes * C, lanes * lanes])
+    const aPre = w('stack.mhc_a_pre').slice([layer]).reshape([]), aPost = w('stack.mhc_a_post').slice([layer]).reshape([]), aRes = w('stack.mhc_a_res').slice([layer]).reshape([]), bPre = w('stack.mhc_b_pre').slice([layer, 0], [layer + 1, lanes]).reshape([lanes]), bPost = w('stack.mhc_b_post').slice([layer, 0], [layer + 1, lanes]).reshape([lanes]), bRes = w('stack.mhc_b_res').slice([layer, 0, 0], [layer + 1, lanes, lanes]).reshape([lanes, lanes])
+    const active = layer % lanes, preOff = np.array(Array.from({ length: lanes }, (_, i) => i === active ? 4 : -4), { dtype: np.float32 }), postOff = np.array(Array.from({ length: lanes }, (_, i) => i === active ? 0 : -4), { dtype: np.float32 }), hpre = sigmoid(np.einsum('btc,cn->btn', nx.ref, phiPre.ref).mul(aPre).add(bPre).add(preOff)), u = np.einsum('btn,btnc->btc', hpre.ref, x.ref)
     let blockInput = u
-    if ((cfg.engram_layers || []).map(Number).includes(layer) && engram.length) { const s = (cfg.engram_layers || []).map(Number).indexOf(layer), ek = engram[s][0], ev = engram[s][1], alpha = sigmoid(np.einsum('btd,sbtd->sbt', rms(u.ref), rms(np.stack(engram.map(e => e[0]), 0).ref)).div(Math.sqrt(C))); blockInput = u.add(np.einsum('s,sbt,sbtd->btd', np.array((cfg.engram_layers || []).map((v, i) => i === s ? 1 : 0), { dtype: np.float32 }).ref, alpha.ref, np.stack(engram.map(e => e[1]), 0).ref)) }
+    if (siteLayers.includes(layer)) { const s = siteLayers.indexOf(layer), ek = engram[s][0], ev = engram[s][1], allK = np.stack(engram.map(e => e[0]), 0), allV = np.stack(engram.map(e => e[1]), 0), alpha = sigmoid(np.einsum('btd,sbtd->sbt', rms(u.ref), rms(allK.ref)).div(Math.sqrt(C))), flags = np.array(siteLayers.map((_, i) => i === s ? 1 : 0), { dtype: np.float32 }); blockInput = u.add(np.einsum('s,sbt,sbtd->btd', flags.ref, alpha.ref, allV.ref)) }
     const z = zcrms(blockInput.ref, w('stack.layers.block.ZCRMSNorm_0.scale').slice([layer, 0], [layer + 1, C]).reshape([1, 1, C]))
-    const q0 = dense(z.ref, w('stack.layers.block.self_attn.q_proj.kernel').slice([layer, 0, 0], [layer + 1, C, attnDim]).reshape([C, attnDim])).reshape([B, T, H, hd]).transpose([0, 2, 1, 3])
-    const k0 = dense(z.ref, w('stack.layers.block.self_attn.k_proj.kernel').slice([layer, 0, 0], [layer + 1, C, KVH * hd]).reshape([C, KVH * hd])).reshape([B, T, KVH, hd]).transpose([0, 2, 1, 3])
-    const v0 = dense(z.ref, w('stack.layers.block.self_attn.v_proj.kernel').slice([layer, 0, 0], [layer + 1, C, KVH * hd]).reshape([C, KVH * hd])).reshape([B, T, KVH, hd]).transpose([0, 2, 1, 3])
-    const q = rope(zcrms(q0, w('stack.layers.block.self_attn.q_norm.scale').slice([layer, 0], [layer + 1, hd]).reshape([1, 1, 1, hd])), cos, sin), k = rope(zcrms(k0, w('stack.layers.block.self_attn.k_norm.scale').slice([layer, 0], [layer + 1, hd]).reshape([1, 1, 1, hd])), cos, sin)
-    const repeat = H / KVH; let kk = repeat > 1 ? np.repeat(k, repeat, 1) : k, vv = repeat > 1 ? np.repeat(v0, repeat, 1) : v0
-    let scores = np.matmul(q, kk.transpose([0, 1, 3, 2])).div(Math.sqrt(hd)); scores = np.where(causal.ref, scores, -1e30)
-    const m = np.max(scores.ref, -1, true), ex = np.exp(scores.sub(m)), p = ex.div(np.sum(ex.ref, -1, true))
-    let out = np.matmul(p, vv).transpose([0, 2, 1, 3]).reshape([B, T, attnDim])
-    const gateKernel = w('stack.layers.block.self_attn.gate_proj.kernel').slice([layer, 0, 0], [layer + 1, C, attnDim]).reshape([C, attnDim]); out = out.mul(sigmoid(dense(x.ref.reshape([B, T, lanes * C]).slice([0, 0, 0], [B, T, C]), gateKernel).ref))
-    const outKernel = w('stack.layers.block.self_attn.out_proj.kernel').slice([layer, 0, 0], [layer + 1, attnDim, C]).reshape([attnDim, C]); out = dense(out, outKernel)
-    const postNorm = zcrms(out.ref, w('stack.layers.block.post_attn_norm.scale').slice([layer, 0], [layer + 1, C]).reshape([1, 1, C])), afterAttn = blockInput.add(postNorm.mul(sigmoid(w('stack.layers.block.attn_gate').slice([layer]).reshape([]))))
-    const preH = zcrms(afterAttn.ref, w('stack.layers.block.pre_hada_norm.scale').slice([layer, 0], [layer + 1, C]).reshape([1, 1, C]))
-    const d1 = w('stack.layers.block.hadamard_mlp.d1').slice([layer, 0], [layer + 1, Hm.shape[0]]).reshape([Hm.shape[0]]), d2 = w('stack.layers.block.hadamard_mlp.d2').slice([layer, 0], [layer + 1, Hm.shape[0]]).reshape([Hm.shape[0]]), d3 = w('stack.layers.block.hadamard_mlp.d3').slice([layer, 0], [layer + 1, Hm.shape[0]]).reshape([Hm.shape[0]])
-    const pad = C < Hm.shape[0] ? np.pad(preH, [[0, 0], [0, 0], [0, Hm.shape[0] - C]]) : preH
-    let hz = dense(pad.mul(d1), Hm); hz = dense(silu(hz.mul(d2)), Hm); const blockOutput = hz.mul(d3).slice([0, 0, 0], [B, T, C]).add(afterAttn)
-    const y = blockOutput.sub(u.ref), hpost = sigmoid(np.einsum('btc,cn->btn', nx.ref, phiPost.ref).mul(aPost).add(bPost).add(postOff)).mul(2)
-    const res = np.einsum('btc,cn->btn', nx.ref, phiRes.ref), hres = sinkhorn(res.mul(aRes).reshape([B, T, lanes, lanes]).add(bRes))
-    const mixed = np.einsum('btij,btjc->btic', hres.ref, x.ref), updated = mixed.add(np.einsum('btn,btc->btnc', hpost.ref, y.ref)); x = updated.astype(np.float32)
+    const qProj = w('stack.layers.block.self_attn.q_proj.kernel').slice([layer, 0, 0], [layer + 1, C, attnDim]).reshape([C, attnDim]), kProj = w('stack.layers.block.self_attn.k_proj.kernel').slice([layer, 0, 0], [layer + 1, C, KVH * hd]).reshape([C, KVH * hd]), vProj = w('stack.layers.block.self_attn.v_proj.kernel').slice([layer, 0, 0], [layer + 1, C, KVH * hd]).reshape([C, KVH * hd])
+    const q0 = dense(z.ref, qProj).reshape([B, T, H, hd]).transpose([0, 2, 1, 3]), k0 = dense(z.ref, kProj).reshape([B, T, KVH, hd]).transpose([0, 2, 1, 3]), v0 = dense(z.ref, vProj).reshape([B, T, KVH, hd]).transpose([0, 2, 1, 3])
+    const q = rope(zcrms(q0, w('stack.layers.block.self_attn.q_norm.scale').slice([layer, 0], [layer + 1, hd]).reshape([1, 1, 1, hd])), cos, sin), k = rope(zcrms(k0, w('stack.layers.block.self_attn.k_norm.scale').slice([layer, 0], [layer + 1, hd]).reshape([1, 1, 1, hd])), cos, sin), repeat = H / KVH
+    const kk = repeat > 1 ? np.repeat(k, repeat, 1) : k, vv = repeat > 1 ? np.repeat(v0, repeat, 1) : v0
+    let scores = np.matmul(q, kk.transpose([0, 1, 3, 2])).div(Math.sqrt(hd)); scores = np.where(causal.ref, scores, -1e30); const m = np.max(scores.ref, -1, true), ex = np.exp(scores.sub(m)), p = ex.div(np.sum(ex.ref, -1, true)); let out = np.matmul(p, vv).transpose([0, 2, 1, 3]).reshape([B, T, attnDim])
+    const gateKernel = w('stack.layers.block.self_attn.gate_proj.kernel').slice([layer, 0, 0], [layer + 1, C, attnDim]).reshape([C, attnDim]); out = out.mul(sigmoid(dense(z.ref, gateKernel))); const outKernel = w('stack.layers.block.self_attn.out_proj.kernel').slice([layer, 0, 0], [layer + 1, attnDim, C]).reshape([attnDim, C]); out = dense(out, outKernel)
+    const postNorm = zcrms(out.ref, w('stack.layers.block.post_attn_norm.scale').slice([layer, 0], [layer + 1, C]).reshape([1, 1, C])), afterAttn = blockInput.add(postNorm.mul(sigmoid(w('stack.layers.block.attn_gate').slice([layer]).reshape([])))), preH = zcrms(afterAttn.ref, w('stack.layers.block.pre_hada_norm.scale').slice([layer, 0], [layer + 1, C]).reshape([1, 1, C]))
+    const d1 = w('stack.layers.block.hadamard_mlp.d1').slice([layer, 0], [layer + 1, Hm.shape[0]]).reshape([Hm.shape[0]]), d2 = w('stack.layers.block.hadamard_mlp.d2').slice([layer, 0], [layer + 1, Hm.shape[0]]).reshape([Hm.shape[0]]), d3 = w('stack.layers.block.hadamard_mlp.d3').slice([layer, 0], [layer + 1, Hm.shape[0]]).reshape([Hm.shape[0]]), padded = C === Hm.shape[0] ? preH : np.pad(preH, [[0, 0], [0, 0], [0, Hm.shape[0] - C]])
+    let hz = dense(padded.mul(d1), Hm); hz = dense(silu(hz.mul(d2)), Hm); const blockOutput = hz.mul(d3).slice([0, 0, 0], [B, T, C]).add(afterAttn), y = blockOutput.sub(u.ref), hpost = sigmoid(np.einsum('btc,cn->btn', nx.ref, phiPost.ref).mul(aPost).add(bPost).add(postOff)).mul(2), res = np.einsum('btc,cn->btn', nx.ref, phiRes.ref), hres = sinkhorn(res.mul(aRes).reshape([B, T, lanes, lanes]).add(bRes)), mixed = np.einsum('btij,btjc->btic', hres.ref, x.ref), updated = mixed.add(np.einsum('btn,btc->btnc', hpost.ref, y.ref)); x = updated.astype(np.float32)
   }
-  const finalNorm = zcrms(np.mean(x.ref, 2), w('stack.final_norm.scale').ref)
-  return dense(finalNorm, w('embedding.embedding').transpose([1, 0]))
+  return dense(zcrms(np.mean(x.ref, 2), w('stack.final_norm.scale').ref), w('embedding.embedding').transpose([1, 0]))
 }
-
-async function loadWeights () {
-  const button = $('verifyFull'); button.disabled = true; button.textContent = '载入中…'; $('fullStatus').className = 'status'
-  try {
-    const payload = await (await fetch('/weights.json')).json()
-    if (payload.format !== 'needle-timemachine.weights/v1') throw new Error('不支持的权重格式')
-    weights = Object.fromEntries(payload.tensors.map(t => [t.name, decode(t)]))
-    const logits = fullForward(trace.prompt_tokens.map(x => Number(x.token_id)), payload.config), fp = await fingerprint(logits)
-    const reference = trace.events.find(x => x.op === 'probability_output')?.metadata?.logits_fingerprint
-    if (!reference) throw new Error('trace 中没有 Python logits 指纹')
-    const ok = closeEnough(fp.sum, reference.sum, Math.sqrt(Math.abs(fp.sumSquares))) && closeEnough(fp.sumSquares, reference.sum_squares, Math.abs(reference.sum_squares))
-    $('fullStatus').className = 'status ' + (ok ? 'ok' : 'bad')
-    $('fullStatus').innerHTML = ok ? `<b>✓ 完整前向校验通过</b>：${payload.tensors.length} 个权重张量，logits 指纹与 Python 一致。` : `<b>✗ 完整前向校验失败</b>：logits 指纹不一致（sum=${fp.sum}, sumSquares=${fp.sumSquares}）。`
-  } catch (err) { $('fullStatus').className = 'status bad'; $('fullStatus').textContent = '完整前向校验异常：' + err.message + '\n' + (err.stack || '') } finally { button.disabled = false; button.textContent = '载入权重并验算' }
-}
-
+async function loadWeights () { const button = $('verifyFull'); button.disabled = true; button.textContent = '载入中…'; $('fullStatus').className = 'status'; try { const payload = await (await fetch('/weights.json')).json(); if (payload.format !== 'needle-timemachine.weights/v1') throw new Error('不支持的权重格式'); weights = Object.fromEntries(payload.tensors.map(t => [t.name, decode(t)])); const logits = fullForward(trace.prompt_tokens.map(x => Number(x.token_id)), payload.config), fp = await fingerprint(logits), reference = trace.events.find(x => x.op === 'probability_output')?.metadata?.logits_fingerprint; if (!reference) throw new Error('trace 中没有 Python logits 指纹'); const ok = closeEnough(fp.sum, reference.sum, Math.sqrt(Math.abs(fp.sumSquares))) && closeEnough(fp.sumSquares, reference.sum_squares, Math.abs(reference.sum_squares)); $('fullStatus').className = 'status ' + (ok ? 'ok' : 'bad'); $('fullStatus').innerHTML = ok ? `<b>✓ 完整前向校验通过</b>：${payload.tensors.length} 个权重张量，logits 指纹与 Python 一致。` : `<b>✗ 完整前向校验失败</b>：logits 指纹不一致（sum=${fp.sum}, sumSquares=${fp.sumSquares}）。` } catch (err) { $('fullStatus').className = 'status bad'; $('fullStatus').textContent = '完整前向校验异常：' + err.message + '\n' + (err.stack || '') } finally { button.disabled = false; button.textContent = '载入权重并验算' } }
 load()
