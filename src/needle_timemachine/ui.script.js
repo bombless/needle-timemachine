@@ -189,6 +189,38 @@ function renderProbabilities (e) {
       .join('') +
     '</table>'
 }
+function renderJaxLogits (logits, cfg) {
+  const data = logits.dataSync()
+  const start = (data.length - Number(cfg.vocab_size))
+  const final = Array.from(data.slice(start, start + Number(cfg.vocab_size)))
+  const metadata = new Map()
+  for (const e of trace.events) {
+    for (const x of e?.metadata?.top_k || []) {
+      if (x && x.token_id != null && !metadata.has(Number(x.token_id))) {
+        metadata.set(Number(x.token_id), x.token_text || '')
+      }
+    }
+  }
+  const top = final
+    .map((logit, tokenId) => ({
+      tokenId,
+      tokenText: metadata.get(tokenId) || '',
+      logit: Number(logit)
+    }))
+    .sort((a, b) => b.logit - a.logit)
+    .slice(0, 5)
+  $('jaxLogits').innerHTML =
+    '<table class="probability-table"><tr><th>Rank</th><th>Token ID</th><th>Token</th><th>JAX.js logit</th></tr>' +
+    top
+      .map(
+        (x, i) =>
+          `<tr><td>${i + 1}</td><td>${esc(x.tokenId)}</td><td class="mono">${
+            esc(x.tokenText) || '∅'
+          }</td><td class="mono">${x.logit.toPrecision(10)}</td></tr>`
+      )
+      .join('') +
+    '</table>'
+}
 function step (n) {
   render(pos + n)
 }
@@ -230,6 +262,7 @@ async function loadWeights () {
   button.disabled = true
   button.textContent = '载入中…'
   $('fullStatus').className = 'status'
+  $('jaxLogits').textContent = '计算中…'
   try {
     const response = await fetch('/weights.json')
     if (!response.ok) throw new Error(`权重请求失败 (${response.status})`)
@@ -239,9 +272,10 @@ async function loadWeights () {
     const weights = weightsFromPayload(payload)
     const tokenIds = (trace.prompt_tokens || []).map(x => Number(x.token_id))
     if (!tokenIds.length) throw new Error('trace 中没有 prompt tokens')
+    const cfg = normalizeConfig(payload.config)
     const logits = forward(
       np.array(Int32Array.from(tokenIds), { dtype: np.int32 }).reshape([1, tokenIds.length]),
-      normalizeConfig(payload.config),
+      cfg,
       weights
     )
     const fp = await fingerprint(logits)
@@ -249,13 +283,15 @@ async function loadWeights () {
     if (!reference) throw new Error('trace 中没有 Python logits 指纹')
     const ok = closeEnough(fp.sum, reference.sum, Math.sqrt(Math.abs(fp.sumSquares))) &&
       closeEnough(fp.sumSquares, reference.sum_squares, Math.abs(reference.sum_squares))
+    renderJaxLogits(logits, cfg)
     $('fullStatus').className = 'status ' + (ok ? 'ok' : 'bad')
     $('fullStatus').innerHTML = ok
       ? `<b>✓ 完整前向校验通过</b>：浏览器执行 forward.js（${backend}），${payload.tensors.length} 个权重张量的 logits 指纹与 Python 一致。`
-      : `<b>✗ 完整前向校验失败</b>：浏览器执行 forward.js（${backend}），logits 指纹不一致（sum=${fp.sum}, sumSquares=${fp.sumSquares}）。`
+      : `<b>✗ 完整前向校验失败</b>：浏览器执行 forward.js（${backend}），logits 指纹不一致（sum=${fp.sum}, sumSquares=${fp.sumSquares}）。JAX.js 的最终 token logits 仍已列在下方。`
   } catch (err) {
     $('fullStatus').className = 'status bad'
     $('fullStatus').textContent = '完整前向校验异常：' + err.message + '\n' + (err.stack || '')
+    $('jaxLogits').textContent = '无法生成 JAX.js logits：' + err.message
   } finally {
     button.disabled = false
     button.textContent = '载入权重并运行 forward.js'
