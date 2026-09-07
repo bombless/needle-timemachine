@@ -418,6 +418,7 @@ function forward(tokens, cfg, w) {
 export { forward, normalizeConfig, weightsFromPayload, init, defaultDevice, np };
 
 async function main() {
+  const startTime = +new Date;
   const args = process.argv.slice(2);
   if (args.includes('--help') || args.includes('-h')) {
     console.log(HELP.trimEnd());
@@ -477,6 +478,7 @@ async function main() {
   if (rmse !== null) console.log(`rmse:       ${rmse}`);
   if (cosine !== null) console.log(`cosine:     ${cosine}`);
   if (maxRel !== null) console.log(`max_rel:    ${maxRel}`);
+  console.log('time', +new Date - startTime, 'ms')
 }
 
 const invokedAsCli = isNode && process.argv[1] && process.argv[1].replaceAll('\\', '/').endsWith('/forward.js');
