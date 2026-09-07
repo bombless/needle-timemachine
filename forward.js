@@ -241,7 +241,8 @@ function engramIndices(tokens, orders, heads, slots) {
   const B = tokens.shape[0], T = tokens.shape[1];
   const host = tokens.dataSync();
   const out = [];
-  const SEED = 0x9E3779B9 >>> 0, PRIME = 0x010001F3 >>> 0;
+  // Must match Needle's uint32 n-gram hash exactly; this selects Engram rows.
+  const SEED = 0x9E3779B9 >>> 0, PRIME = 0x01000193 >>> 0;
   for (let oi = 0; oi < orders.length; ++oi) for (let h = 0; h < heads; ++h) {
     const seed = Math.imul(SEED, oi * heads + h + 1) >>> 0;
     const a = new Int32Array(B * T);
