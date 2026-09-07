@@ -8,10 +8,10 @@ const fs = isNode ? (await import('node:fs')).default : null;
 
 const MAGIC = 'NEEDLEJS1';
 const HEADER_BYTES = 4;
-// Run the numerical forward/verification path in fp64. The checkpoint is
-// stored as fp32, but casting weights and generated constants to fp64 makes
-// the actual arithmetic (including reductions) execute in double precision.
-const D = np.float64;
+// Run the numerical forward/verification path in fp32. The checkpoint is
+// stored as fp32, so keep weights, generated constants, and intermediate
+// arithmetic in single precision rather than promoting the graph to fp64.
+const D = np.float32;
 
 const HELP = `Usage: node forward.js [weights.bin] [options]
 
@@ -105,16 +105,12 @@ function readWeights(path = 'weights.bin') {
     const bytes = buf.subarray(dataStart + e.offset, dataStart + e.offset + e.nbytes);
     const raw = new Float32Array(bytes.length / 4);
     raw.set(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength).buffer ? new Float32Array(Uint8Array.from(bytes).buffer) : []);
-    const raw64 = new Float64Array(raw.length);
-    for (let i = 0; i < raw.length; ++i) raw64[i] = raw[i];
-    weights[e.name] = np.array(raw64, { dtype: D }).reshape(e.shape);
+    weights[e.name] = np.array(raw, { dtype: D }).reshape(e.shape);
   }
   let reference = null;
   if (header.reference) {
     const r = buf.subarray(dataStart + header.reference.offset, dataStart + header.reference.offset + header.reference.nbytes);
-    const reference32 = new Float32Array(Uint8Array.from(r).buffer);
-    reference = new Float64Array(reference32.length);
-    for (let i = 0; i < reference32.length; ++i) reference[i] = reference32[i];
+    reference = new Float32Array(Uint8Array.from(r).buffer);
   }
   return { header: { ...header, reference }, weights };
 }
@@ -144,9 +140,7 @@ function weightsFromPayload(payload) {
   for (const tensor of payload.tensors || []) {
     if (tensor.encoding !== 'base64-f32-le') throw new Error(`unsupported tensor encoding: ${tensor.encoding}`);
     const raw = decodeBase64F32(tensor.data);
-    const raw64 = new Float64Array(raw.length);
-    for (let i = 0; i < raw.length; ++i) raw64[i] = raw[i];
-    weights[payloadTensorName(tensor.name)] = np.array(raw64, { dtype: D }).reshape(tensor.shape);
+    weights[payloadTensorName(tensor.name)] = np.array(raw, { dtype: D }).reshape(tensor.shape);
   }
   return weights;
 }
@@ -154,7 +148,7 @@ function weightsFromPayload(payload) {
 function sl(x, starts, ends) {
   return x.ref.slice(...starts.map((start, i) => [start, ends[i]]));
 }
-function scalar(x) { return np.array(new Float64Array([x]), { dtype: D }).reshape([]); }
+function scalar(x) { return np.array(new Float32Array([x]), { dtype: D }).reshape([]); }
 function sigmoid(x) { return np.divide(1, np.add(1, np.exp(np.negative(x)))); }
 function silu(x) { return x.mul(sigmoid(x.ref)); }
 function rmsUnit(x, eps = 1e-6) {
@@ -202,8 +196,8 @@ function rope(x, cos, sin) {
 }
 function ropeFreqs(headDim, seqLen, theta) {
   const half = Math.floor(headDim / 2);
-  const c = new Float64Array(seqLen * half);
-  const s = new Float64Array(seqLen * half);
+  const c = new Float32Array(seqLen * half);
+  const s = new Float32Array(seqLen * half);
   for (let t = 0; t < seqLen; ++t) for (let j = 0; j < half; ++j) {
     const freq = 1 / Math.pow(theta, (2 * j) / headDim);
     const a = t * freq;
@@ -225,13 +219,13 @@ function walsh(n) {
     }
     h = next;
   }
-  const a = new Float64Array(n * n), s = Math.sqrt(n);
+  const a = new Float32Array(n * n), s = Math.sqrt(n);
   for (let i = 0; i < n; ++i) for (let j = 0; j < n; ++j) a[i * n + j] = h[i][j] / s;
   return np.array(a, { dtype: D }).reshape([n, n]);
 }
 
 function engramGeometry(cfg) {
-  const orders = cfg.engram_orders ?? [2, 3];
+  const orders = cfg.engram_orders ?? [2,3];
   const heads = cfg.engram_heads || Math.max(1, Math.floor(cfg.d_model / (orders.length * 128)));
   const subDim = Math.floor(cfg.d_model / (orders.length * heads));
   return { orders, heads, subDim };
@@ -242,7 +236,7 @@ function engramIndices(tokens, orders, heads, slots) {
   const host = tokens.dataSync();
   const out = [];
   // Must match Needle's uint32 n-gram hash exactly; this selects Engram rows.
-  const SEED = 0x9E3779B9 >>> 0, PRIME = 0x01000193 >>> 0;
+  const SEED = 0x9E3779B9 >>> 0, PRIME = 0x010001F93 >>> 0;
   for (let oi = 0; oi < orders.length; ++oi) for (let h = 0; h < heads; ++h) {
     const seed = Math.imul(SEED, oi * heads + h + 1) >>> 0;
     const a = new Int32Array(B * T);
@@ -278,7 +272,7 @@ function makeEngramKV(tokens, maskKeep, cfg, w) {
       const one = sl(table.ref, [j, 0, 0], [j + 1, table.shape[1], table.shape[2]]).reshape([table.shape[1], table.shape[2]]);
       const gathered = np.take(one, idx[j].ref, 0);
       const order = orders[Math.floor(j / heads)];
-      const ok = np.array(new Float64Array(Array.from({ length: tokens.shape[1] }, (_, t) => t >= order - 1 ? 1 : 0)), { dtype: D }).reshape([1, tokens.shape[1], 1]);
+      const ok = np.array(new Float32Array(Array.from({ length: tokens.shape[1] }, (_, t) => t >= order - 1 ? 1 : 0)), { dtype: D }).reshape([1, tokens.shape[1], 1]);
       fetched.push(gathered.mul(ok));
     }
     let e = np.stack(fetched, 2).reshape([tokens.shape[0], tokens.shape[1], numTables * subDim]);
@@ -296,7 +290,7 @@ function makeEngramKV(tokens, maskKeep, cfg, w) {
     for (let j = 0; j < 4; ++j) {
       const shifted = shiftRight(v.ref, j * Math.max(...orders));
       const tap = sl(taps.ref, [j, 0], [j + 1, cfg.d_model]).reshape([1, 1, cfg.d_model]);
-      const ok = np.array(new Float64Array(Array.from({ length: tokens.shape[1] }, (_, t) => t >= j * maxOrder ? 1 : 0)), { dtype: D }).reshape([1, tokens.shape[1], 1]);
+      const ok = np.array(new Float32Array(Array.from({ length: tokens.shape[1] }, (_, t) => t >= j * maxOrder ? 1 : 0)), { dtype: D }).reshape([1, tokens.shape[1], 1]);
       vv = vv.add(shifted.mul(tap).mul(ok));
     }
     ks.push(k); vs.push(vv);
