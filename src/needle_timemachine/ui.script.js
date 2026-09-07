@@ -12,9 +12,9 @@ let trace = { events: [] },
 const $ = id => document.getElementById(id)
 const esc = v =>
   String(v ?? '').replace(
-    /[&<>"']/g,
+    /[&<>\"']/g,
     c =>
-      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', "'": '&#039;' }[
         c
       ])
   )
@@ -51,8 +51,10 @@ function decode (p) {
     .reshape(p.shape)
 }
 async function fingerprint (a) {
+  // jax-js uses move semantics: never consume the caller's array here.
+  // Keep the original alive by taking refs before using it in arithmetic.
   const sum = await a.ref.sum().jsAsync()
-  const sq = await a.mul(a.ref).sum().jsAsync()
+  const sq = await a.ref.mul(a.ref).sum().jsAsync()
   return { sum: Number(sum), sumSquares: Number(sq) }
 }
 function closeEnough (a, b, scale = 1) {
@@ -189,15 +191,23 @@ function renderProbabilities (e) {
       .join('') +
     '</table>'
 }
-function renderJaxLogits (logits, cfg) {
+function renderJaxLogits (logits, cfg, tokenMetadata = []) {
   const data = logits.dataSync()
-  const start = (data.length - Number(cfg.vocab_size))
+  const start = data.length - Number(cfg.vocab_size)
   const final = Array.from(data.slice(start, start + Number(cfg.vocab_size)))
   const metadata = new Map()
-  for (const e of trace.events) {
-    for (const x of e?.metadata?.top_k || []) {
-      if (x && x.token_id != null && !metadata.has(Number(x.token_id))) {
-        metadata.set(Number(x.token_id), x.token_text || '')
+  for (const x of tokenMetadata || []) {
+    if (x && x.token_id != null && !metadata.has(Number(x.token_id))) {
+      metadata.set(Number(x.token_id), x.token_text || '')
+    }
+  }
+  // Backward-compatible fallback for old weights.json files.
+  if (!metadata.size) {
+    for (const e of trace.events) {
+      for (const x of e?.metadata?.top_k || []) {
+        if (x && x.token_id != null && !metadata.has(Number(x.token_id))) {
+          metadata.set(Number(x.token_id), x.token_text || '')
+        }
       }
     }
   }
@@ -283,7 +293,7 @@ async function loadWeights () {
     if (!reference) throw new Error('trace 中没有 Python logits 指纹')
     const ok = closeEnough(fp.sum, reference.sum, Math.sqrt(Math.abs(fp.sumSquares))) &&
       closeEnough(fp.sumSquares, reference.sum_squares, Math.abs(reference.sum_squares))
-    renderJaxLogits(logits, cfg)
+    renderJaxLogits(logits, cfg, payload.token_metadata)
     $('fullStatus').className = 'status ' + (ok ? 'ok' : 'bad')
     $('fullStatus').innerHTML = ok
       ? `<b>✓ 完整前向校验通过</b>：浏览器执行 forward.js（${backend}），${payload.tensors.length} 个权重张量的 logits 指纹与 Python 一致。`
