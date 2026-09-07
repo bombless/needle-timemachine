@@ -19,6 +19,8 @@ Options:
   --prefill-file=<path>   Read input token ids from a JSON/text file
   --cact=<path>           Load quantized weights from a .cact export instead of weights.bin
   --cact <path>           Same as --cact=<path>
+  --compare-quant         Compare FP32, group-wise W4 and W8 outputs per layer
+  --quant-group=<n>       Group size for --compare-quant (default: 128)
   --help                  Show this help message
 
 If neither --tokens nor --prefill-file is provided, input_tokens from the
@@ -778,7 +780,119 @@ function sinkhorn (logits, iters = 20) {
   }
   return np.exp(x)
 }
-function forward (tokens, cfg, w) {
+function isQuantizableWeight (name, value) {
+  if (!value || value.shape.length < 2) return false
+  return (
+    name === 'embedding/embedding' ||
+    name.includes('/kernel') ||
+    name.includes('/mhc_phi_') ||
+    name.startsWith('engrams_') && name.endsWith('/embedding')
+  )
+}
+
+// Apply the same simple per-group symmetric quantization to a float32 weight
+// tensor. Projection kernels are stored as [in, out], while embeddings are
+// stored as rows whose last dimension is the quantization axis.
+function quantizeWeight (name, value, bits, group = 128) {
+  if (!isQuantizableWeight(name, value)) return value
+  const shape = [...value.shape]
+  const src = value.ref.dataSync()
+  const out = new Float32Array(src.length)
+  const qmax = (1 << (bits - 1)) - 1
+  const reduceSecondLast = name.includes('/kernel') || name.includes('/mhc_phi_')
+  const quantDim = reduceSecondLast ? shape.at(-2) : shape.at(-1)
+  const columns = reduceSecondLast ? shape.at(-1) : 1
+  const rows = src.length / (quantDim * columns)
+  for (let row = 0; row < rows; ++row) {
+    for (let col = 0; col < columns; ++col) {
+      const base = row * quantDim * columns + col
+      for (let start = 0; start < quantDim; start += group) {
+        const end = Math.min(quantDim, start + group)
+        let scale = 0
+        for (let i = start; i < end; ++i)
+          scale = Math.max(scale, Math.abs(src[base + i * columns]))
+        scale = scale > 0 ? scale / qmax : 1
+        for (let i = start; i < end; ++i) {
+          const index = base + i * columns
+          out[index] = Math.max(-qmax - 1, Math.min(qmax,
+            Math.round(src[index] / scale))) * scale
+        }
+      }
+    }
+  }
+  return np.array(out, { dtype: D }).reshape(shape)
+}
+
+function snapshotWeights (weights) {
+  const snapshot = {}
+  for (const [name, value] of Object.entries(weights))
+    snapshot[name] = { shape: [...value.shape], data: new Float32Array(value.ref.dataSync()) }
+  return snapshot
+}
+
+function weightsFromSnapshot (snapshot) {
+  const out = {}
+  for (const [name, value] of Object.entries(snapshot))
+    out[name] = np.array(value.data, { dtype: D }).reshape(value.shape)
+  return out
+}
+
+function quantizedWeights (snapshot, bits, group = 128) {
+  const out = {}
+  for (const [name, value] of Object.entries(weightsFromSnapshot(snapshot)))
+    out[name] = quantizeWeight(name, value, bits, group)
+  return out
+}
+
+function topLogits (out, tokens, cfg, tokenMetadata, count = 5) {
+  const final = out.slice(
+    (tokens.length - 1) * cfg.vocab_size,
+    tokens.length * cfg.vocab_size
+  )
+  return Array.from(final)
+    .map((v, i) => {
+      const metadata = tokenMetadata[i] || {}
+      return {
+        token_id: i,
+        token_text: metadata.token_text || '',
+        token_bytes_hex: metadata.token_bytes_hex || '',
+        logit: v
+      }
+    })
+    .sort((a, b) => b.logit - a.logit)
+    .slice(0, count)
+}
+
+function compareLayerRuns (baseline, candidate, label) {
+  const rows = []
+  for (let i = 1; i < baseline.layers.length; ++i) {
+    const ref = baseline.layers[i].output.ref.dataSync()
+    const got = candidate.layers[i].output.ref.dataSync()
+    rows.push({ layer: baseline.layers[i].layer, mode: label, ...vectorMetrics(ref, got) })
+  }
+  return rows
+}
+
+function vectorMetrics (reference, candidate) {
+  let dot = 0, nr = 0, nc = 0, se = 0, maxAbs = 0
+  for (let i = 0; i < reference.length; ++i) {
+    const a = reference[i], b = candidate[i], d = a - b
+    dot += a * b
+    nr += a * a
+    nc += b * b
+    se += d * d
+    maxAbs = Math.max(maxAbs, Math.abs(d))
+  }
+  const cosine = dot / Math.max(1e-30, Math.sqrt(nr * nc))
+  return {
+    cosine,
+    angle_deg: Math.acos(Math.max(-1, Math.min(1, cosine))) * 180 / Math.PI,
+    rmse: Math.sqrt(se / Math.max(1, reference.length)),
+    max_abs: maxAbs
+  }
+}
+
+function forward (tokens, cfg, w, options = {}) {
   const B = tokens.shape[0],
     T = tokens.shape[1],
     C = cfg.d_model,
@@ -797,7 +911,14 @@ function forward (tokens, cfg, w) {
   let x = embed.reshape([B, T, 1, C])
   x = np.tile(x, [1, 1, n, 1])
   const H = walsh(512)
+  const capturedLayers = options.captureLayers ? [] : null
+  if (capturedLayers) capturedLayers.push({
+    layer: -1,
+    input: null,
+    output: np.mean(x.ref, 2)
+  })
   for (let layer = 0; layer < cfg.num_layers; ++layer) {
+    const layerInput = capturedLayers ? np.mean(x.ref, 2) : null
     const nx = rmsUnit(x.ref.reshape([B, T, n * C])),
       phiPre = sl(
         w['stack/mhc_phi_pre'],
@@ -901,10 +1022,16 @@ function forward (tokens, cfg, w) {
       xf = x.astype(D),
       mixed = np.einsum('btij,btjc->btic', hres, xf)
     x = mixed.add(np.einsum('btn,btc->btnc', hpost, y)).astype(D)
+    if (capturedLayers) capturedLayers.push({
+      layer,
+      input: layerInput,
+      output: np.mean(x.ref, 2)
+    })
   }
   x = np.mean(x, 2)
   x = zcrmsNorm(x, w['stack/final_norm/scale'])
-  return linear(x, np.transpose(w['embedding/embedding'], [1, 0]))
+  const logits = linear(x, np.transpose(w['embedding/embedding'], [1, 0]))
+  return capturedLayers ? { logits, layers: capturedLayers } : logits
 }
 
 export {
@@ -949,6 +1076,7 @@ async function main () {
       : readWeights(positional || 'weights.bin'),
     header = loaded.header,
     weights = loaded.weights,
+     weightSnapshot = snapshotWeights(weights),
     cfg = normalizeConfig(header.config ?? header),
     tokensArg = args.find(x => x.startsWith('--tokens=')),
     prefillArg = args.find(x => x.startsWith('--prefill-file='))
@@ -961,11 +1089,49 @@ async function main () {
     : header.input_tokens || [1, 2, 3, 4]
   const backend = (await init('wasm')).includes('wasm') ? 'wasm' : 'cpu'
   defaultDevice(backend)
-  const tokenArray = np
-      .array(Int32Array.from(tokens), { dtype: np.int32 })
-      .reshape([1, tokens.length]),
-    logits = forward(tokenArray, cfg, weights),
+  const compareQuant = args.includes('--compare-quant')
+  const compareGroupArg = args.find(x => x.startsWith('--quant-group='))
+  const compareGroup = compareGroupArg ? Number(compareGroupArg.slice('--quant-group='.length)) : 128
+  if (!Number.isInteger(compareGroup) || compareGroup <= 0)
+    throw new Error('--quant-group must be a positive integer')
+  const tokenData = Int32Array.from(tokens)
+  const makeTokenArray = () => np
+    .array(tokenData, { dtype: np.int32 })
+    .reshape([1, tokens.length])
+  const baselineRun = forward(
+      makeTokenArray(),
+      cfg,
+      weights,
+      { captureLayers: compareQuant }
+    ),
+    logits = baselineRun.logits ?? baselineRun,
     out = logits.dataSync()
+  const tokenMetadata = loadTokenMetadata(header)
+  if (compareQuant) {
+    console.log('layer_quant_compare: FP32 baseline vs symmetric per-group W4/W8')
+    console.log(`top-5 mode=FP32: ${JSON.stringify(topLogits(out, tokens, cfg, tokenMetadata))}`)
+    for (const bits of [4, 8]) {
+      const candidate = forward(
+        makeTokenArray(),
+        cfg,
+        quantizedWeights(weightSnapshot, bits, compareGroup),
+        { captureLayers: true }
+      )
+      for (const row of compareLayerRuns(baselineRun, candidate, `W${bits}`))
+        console.log(
+          `layer=${row.layer} mode=${row.mode} cosine=${row.cosine} ` +
+          `angle_deg=${row.angle_deg} rmse=${row.rmse} max_abs=${row.max_abs}`
+        )
+      const candidateOut = candidate.logits.ref.dataSync()
+      console.log(`top-5 mode=W${bits}: ${JSON.stringify(topLogits(candidateOut, tokens, cfg, tokenMetadata))}`)
+      const finalMetrics = vectorMetrics(out, candidateOut)
+      console.log(
+        `final mode=W${bits} cosine=${finalMetrics.cosine} ` +
+        `angle_deg=${finalMetrics.angle_deg} rmse=${finalMetrics.rmse} ` +
+        `max_abs=${finalMetrics.max_abs}`
+      )
+    }
+  }
   let maxAbs = null,
     maxRel = null,
     rmse = null,
@@ -993,25 +1159,7 @@ async function main () {
     rmse = Math.sqrt(se / out.length)
     cosine = dot / Math.sqrt(na * nb)
   }
-  const final = Array.from(
-    out.slice(
-      (tokens.length - 1) * cfg.vocab_size,
-      tokens.length * cfg.vocab_size
-    )
-  )
-  const tokenMetadata = loadTokenMetadata(header)
-  const top = final
-    .map((v, i) => {
-      const metadata = tokenMetadata[i] || {}
-      return {
-        token_id: i,
-        token_text: metadata.token_text || '',
-        token_bytes_hex: metadata.token_bytes_hex || '',
-        logit: v
-      }
-    })
-    .sort((a, b) => b.logit - a.logit)
-    .slice(0, 5)
+  const top = topLogits(out, tokens, cfg, tokenMetadata)
   console.log(`backend:    ${backend}`)
   console.log(`weights:    ${cactPath ? 'cact' : 'weights.bin'}`)
   console.log(`tokens:     ${tokens.length}`)
