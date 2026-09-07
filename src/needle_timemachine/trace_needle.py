@@ -41,6 +41,24 @@ def _jsonable(value: Any) -> Any:
     return str(value)
 
 
+def _token_metadata(tokenizer: Any, vocab_size: int) -> list[dict[str, Any]] | None:
+    """Serialize the complete tokenizer vocabulary for browser-side logit display."""
+    if tokenizer is None:
+        return None
+    metadata = []
+    for token_id in range(int(vocab_size)):
+        try:
+            token_text = tokenizer.decode([token_id])
+        except Exception:
+            token_text = ""
+        metadata.append({
+            "token_id": token_id,
+            "token_text": token_text,
+            "token_bytes_hex": token_text.encode("utf-8").hex(" "),
+        })
+    return metadata
+
+
 def _find_logits(value: Any) -> np.ndarray:
     """Find the logits array in Needle's forward return value."""
     if hasattr(value, "shape") and hasattr(value, "dtype"):
@@ -108,6 +126,10 @@ def weight_payload(runtime: Any) -> dict[str, Any]:
     return {
         "format": "needle-timemachine.weights/v1",
         "config": _jsonable(config_data),
+        "token_metadata": _token_metadata(
+            runtime.tokenizer,
+            runtime.config.vocab_size,
+        ),
         "tensors": _flatten_weights(runtime.params),
     }
 
@@ -148,24 +170,11 @@ def write_weights_bin(
         for name, field in runtime.config.__dataclass_fields__.items()
         if hasattr(runtime.config, name) or field.default is not MISSING
     }
-    token_metadata = None
-    if tokenizer is not None:
-        token_metadata = []
-        for token_id in range(int(runtime.config.vocab_size)):
-            try:
-                token_text = tokenizer.decode([token_id])
-            except Exception:
-                token_text = ""
-            token_metadata.append({
-                "token_id": token_id,
-                "token_text": token_text,
-                "token_bytes_hex": token_text.encode("utf-8").hex(" "),
-            })
     header = {
         "format": "needle-timemachine.jaxjs-weights/v1",
         "config": _jsonable(config),
         "input_tokens": [int(x) for x in token_ids],
-        "token_metadata": token_metadata,
+        "token_metadata": _token_metadata(tokenizer, runtime.config.vocab_size),
         "tensors": entries,
         "reference": {"offset": ref_offset, "nbytes": len(ref_raw), "shape": list(ref.shape)},
     }
@@ -369,4 +378,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
