@@ -11,6 +11,10 @@ from typing import Any
 _HTML = open(os.path.join(os.path.dirname(__file__), "ui.html"), encoding="utf-8").read()
 
 _JS = open(os.path.join(os.path.dirname(__file__), "ui.script.js"), encoding="utf-8").read()
+_FORWARD = open(
+    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "forward.js"),
+    encoding="utf-8",
+).read()
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -35,6 +39,8 @@ def make_server(trace_path: Path, host: str = "127.0.0.1", port: int = 8765, wei
                 content_type = "application/json; charset=utf-8"
             elif self.path == "/ui.script.js":
                 body, content_type = _JS.encode("utf-8"), "application/javascript; charset=utf-8"
+            elif self.path == "/forward.js":
+                body, content_type = _FORWARD.encode("utf-8"), "application/javascript; charset=utf-8"
             else:
                 self.send_error(404); return
             self.send_response(200); self.send_header("Content-Type", content_type)

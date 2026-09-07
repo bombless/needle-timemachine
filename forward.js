@@ -1,5 +1,10 @@
-import fs from 'node:fs';
 import { init, defaultDevice, numpy as np } from '@jax-js/jax';
+
+// The numerical path is shared by the Node CLI and the browser verifier. Node
+// loads its filesystem API lazily so this module remains importable in a
+// browser (the page supplies an import map for @jax-js/jax).
+const isNode = typeof process !== 'undefined' && Boolean(process.versions?.node);
+const fs = isNode ? (await import('node:fs')).default : null;
 
 const MAGIC = 'NEEDLEJS1';
 const HEADER_BYTES = 4;
@@ -87,6 +92,7 @@ function loadTokenMetadata(header) {
 }
 
 function readWeights(path = 'weights.bin') {
+  if (!fs) throw new Error('readWeights is only available in Node.js');
   const buf = fs.readFileSync(path);
   const magic = Buffer.from(buf.subarray(0, MAGIC.length)).toString('ascii');
   if (magic !== MAGIC) throw new Error(`bad weights.bin magic: ${magic}`);
@@ -111,6 +117,38 @@ function readWeights(path = 'weights.bin') {
     for (let i = 0; i < reference32.length; ++i) reference[i] = reference32[i];
   }
   return { header: { ...header, reference }, weights };
+}
+
+function decodeBase64F32(data) {
+  if (typeof atob === 'function') {
+    const binary = atob(data);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; ++i) bytes[i] = binary.charCodeAt(i);
+    return new Float32Array(bytes.buffer);
+  }
+  return new Float32Array(Uint8Array.from(Buffer.from(data, 'base64')).buffer);
+}
+
+function payloadTensorName(name) {
+  // Python's JSON payload uses dotted paths and canonicalizes engram sites as
+  // `engrams.0`; the standalone forward path uses the checkpoint's slash
+  // names (`engrams_0/...`).
+  return String(name).replace(/^engrams\.(\d+)(?=\.)/, 'engrams_$1').replaceAll('.', '/');
+}
+
+function weightsFromPayload(payload) {
+  if (!payload || payload.format !== 'needle-timemachine.weights/v1') {
+    throw new Error('unsupported weights payload');
+  }
+  const weights = {};
+  for (const tensor of payload.tensors || []) {
+    if (tensor.encoding !== 'base64-f32-le') throw new Error(`unsupported tensor encoding: ${tensor.encoding}`);
+    const raw = decodeBase64F32(tensor.data);
+    const raw64 = new Float64Array(raw.length);
+    for (let i = 0; i < raw.length; ++i) raw64[i] = raw[i];
+    weights[payloadTensorName(tensor.name)] = np.array(raw64, { dtype: D }).reshape(tensor.shape);
+  }
+  return weights;
 }
 
 function sl(x, starts, ends) {
@@ -143,10 +181,13 @@ function linear(x, kernel) { return np.matmul(x, kernel); }
 function shiftRight(x, offset, axis = 1) {
   if (offset === 0) return x;
   const shape = [...x.shape];
+  if (axis !== 1) throw new Error('shiftRight currently expects sequence axis=1');
+  // A delay beyond the available prefix still has the original sequence
+  // shape; slicing with a negative end would make jax-js concatenate the
+  // wrong dimensions.
+  if (offset >= shape[axis]) return np.zeros(shape, { dtype: x.dtype });
   const zshape = [...shape]; zshape[axis] = offset;
   const z = np.zeros(zshape, { dtype: x.dtype });
-  const parts = [];
-  if (axis !== 1) throw new Error('shiftRight currently expects sequence axis=1');
   return np.concatenate([z, sl(x, [0, 0], [shape[0], shape[1] - offset])], 1);
 }
 function rope(x, cos, sin) {
@@ -377,6 +418,10 @@ function forward(tokens, cfg, w) {
   return linear(x, np.transpose(w['embedding/embedding'], [1, 0]));
 }
 
+// Public browser/Node API. Keeping this export next to the CLI implementation
+// prevents the web verifier from drifting from forward.js again.
+export { forward, normalizeConfig, weightsFromPayload, init, defaultDevice, np };
+
 async function main() {
   const args = process.argv.slice(2);
   if (args.includes('--help') || args.includes('-h')) {
@@ -439,4 +484,5 @@ async function main() {
   if (maxRel !== null) console.log(`max_rel:    ${maxRel}`);
 }
 
-main().catch(err => { console.error(err); process.exit(1); });
+const invokedAsCli = isNode && process.argv[1] && process.argv[1].replaceAll('\\', '/').endsWith('/forward.js');
+if (invokedAsCli) main().catch(err => { console.error(err); process.exit(1); });

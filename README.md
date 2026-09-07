@@ -99,6 +99,12 @@ python -m needle_timemachine.trace_needle ^
 
 Then open `http://127.0.0.1:8765/`.
 
+The **forward.js 完整前向校验** button in this page runs the same numerical
+implementation as the repository's `forward.js` CLI directly in the browser.
+The trace server exposes that shared module at `/forward.js` and supplies the
+current runtime parameters at `/weights.json`; the page compares the browser
+logits fingerprint with the Python trace output.
+
 ## Tool-calling evaluation workbench
 
 `tool_eval` is a separate, zero-dependency browser module that starts its own OpenAI-compatible `/v1/chat/completions` endpoint. The browser and model endpoint share one port; no second inference server URL is needed in the page. It includes templates for exact selection, similar-tool disambiguation, parallel calls, missing-argument clarification, prompt-injection resistance, strict JSON types, and no-tool answers.
