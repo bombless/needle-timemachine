@@ -1,0 +1,41 @@
+name: Build and publish GitHub Pages
+
+on:
+  push:
+    branches:
+      - make-github-io
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gh-pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Assemble static site
+        run: |
+          rm -rf public
+          mkdir -p public
+          cp site/index.html public/index.html
+          cp site/app.js public/app.js
+          cp forward.js public/forward.js
+          cp prefill.json public/prefill.json
+          cp w4-packed.bin public/w4-packed.bin
+          touch public/.nojekyll
+
+      - name: Publish gh-pages branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: ./public
+          force_orphan: true
+          commit_message: "deploy: ${{ github.sha }}"
