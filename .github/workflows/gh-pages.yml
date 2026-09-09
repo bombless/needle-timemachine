@@ -20,13 +20,22 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Bundle browser app
+        run: npx --yes esbuild@0.25.9 site/app.js --bundle --platform=browser --format=esm --outfile=public/app.js
+
       - name: Assemble static site
         run: |
-          rm -rf public
           mkdir -p public
           cp site/index.html public/index.html
-          cp site/app.js public/app.js
-          cp forward.js public/forward.js
           cp prefill.json public/prefill.json
           cp w4-packed.bin public/w4-packed.bin
           touch public/.nojekyll
