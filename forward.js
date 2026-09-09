@@ -19,6 +19,12 @@ Options:
   --prefill-file=<path>   Read input token ids from a JSON/text file
   --cact=<path>           Load quantized weights from a .cact export instead of weights.bin
   --cact <path>           Same as --cact=<path>
+  --weights=<path>        Load weights from a weights.bin-compatible file
+  --weights <path>        Same as --weights=<path>
+  --w4=<path>             Load packed W4 weights
+  --w4 <path>             Same as --w4=<path>
+  --dump-weights=<path>   Export packed W4 weights
+  --dump-weights <path>   Same as --dump-weights=<path>
   --compare-quant         Compare FP32, group-wise W4 and W8 outputs per layer
   --quant-group=<n>       Group size for --compare-quant (default: 128)
   --help                  Show this help message
@@ -126,6 +132,79 @@ function loadTokenMetadata (header) {
   }
 }
 
+function isPackedW4Tensor (name, shape) {
+  return shape.length >= 2 && (
+    name === 'embedding/embedding' ||
+    name.includes('/kernel') ||
+    name.includes('/mhc_phi_') ||
+    name.startsWith('engrams_') && name.endsWith('/embedding')
+  )
+}
+
+function packW4 (name, value, group = 128) {
+  const shape = [...value.shape]
+  const src = value.ref.dataSync()
+  const reduceSecondLast = name.includes('/kernel') || name.includes('/mhc_phi_')
+  const quantDim = reduceSecondLast ? shape.at(-2) : shape.at(-1)
+  const columns = reduceSecondLast ? shape.at(-1) : 1
+  const rows = src.length / (quantDim * columns)
+  const groupsPerRow = Math.ceil(quantDim / group)
+  const packed = Buffer.alloc(Math.ceil(src.length / 2))
+  const scales = new Float32Array(rows * columns * groupsPerRow)
+  let scaleIndex = 0
+  for (let row = 0; row < rows; ++row) for (let col = 0; col < columns; ++col) {
+    const base = row * quantDim * columns + col
+    for (let start = 0; start < quantDim; start += group) {
+      const end = Math.min(quantDim, start + group)
+      let scale = 0
+      for (let i = start; i < end; ++i) scale = Math.max(scale, Math.abs(src[base + i * columns]))
+      scale = scale > 0 ? scale / 7 : 1
+      scales[scaleIndex++] = scale
+      for (let i = start; i < end; ++i) {
+        const q = Math.max(-8, Math.min(7, Math.round(src[base + i * columns] / scale))) + 8
+        const index = base + i * columns
+        if (index & 1) packed[index >> 1] |= q << 4
+        else packed[index >> 1] |= q
+      }
+    }
+  }
+  return { packed, scales: Buffer.from(new Uint8Array(scales.buffer)), shape, group }
+}
+
+function unpackW4 (bytes, entry, dataStart) {
+  const packedBytes = entry.packed_bytes
+  const packed = bytes.subarray(dataStart + entry.offset, dataStart + entry.offset + packedBytes)
+  const scalesBytes = bytes.subarray(
+    dataStart + entry.scales_offset,
+    dataStart + entry.scales_offset + entry.scales_nbytes
+  )
+  const scales = new Float32Array(Uint8Array.from(scalesBytes).buffer)
+  const shape = entry.shape
+  const reduceSecondLast = entry.name.includes('/kernel') || entry.name.includes('/mhc_phi_')
+  const quantDim = reduceSecondLast ? shape.at(-2) : shape.at(-1)
+  const columns = reduceSecondLast ? shape.at(-1) : 1
+  const elementCount = shape.reduce((a, b) => a * b, 1)
+  const rows = elementCount / (quantDim * columns)
+  const expectedScales = rows * columns * Math.ceil(quantDim / entry.group_size)
+  if (scales.length !== expectedScales)
+    throw new Error(`invalid W4 scales for ${entry.name}: expected ${expectedScales}, got ${scales.length}`)
+  const out = new Float32Array(elementCount)
+  let scaleIndex = 0
+  for (let row = 0; row < rows; ++row) for (let col = 0; col < columns; ++col) {
+    const base = row * quantDim * columns + col
+    for (let start = 0; start < quantDim; start += entry.group_size) {
+      const scale = scales[scaleIndex++]
+      const end = Math.min(quantDim, start + entry.group_size)
+      for (let i = start; i < end; ++i) {
+        const index = base + i * columns
+        const q = ((packed[index >> 1] >> ((index & 1) * 4)) & 15) - 8
+        out[index] = q * scale
+      }
+    }
+  }
+  return np.array(out, { dtype: D }).reshape(shape)
+}
+
 function readWeights (path = 'weights.bin') {
   if (!fs) throw new Error('readWeights is only available in Node.js')
   const buf = fs.readFileSync(path)
@@ -141,16 +220,15 @@ function readWeights (path = 'weights.bin') {
   const dataStart = headerStart + headerLen
   const weights = {}
   for (const e of header.tensors) {
+    if (e.encoding === 'w4') {
+      weights[e.name] = unpackW4(buf, e, dataStart)
+      continue
+    }
     const bytes = buf.subarray(
       dataStart + e.offset,
       dataStart + e.offset + e.nbytes
     )
-    const raw = new Float32Array(bytes.length / 4)
-    raw.set(
-      new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength).buffer
-        ? new Float32Array(Uint8Array.from(bytes).buffer)
-        : []
-    )
+    const raw = new Float32Array(Uint8Array.from(bytes).buffer)
     weights[e.name] = np.array(raw, { dtype: D }).reshape(e.shape)
   }
   let reference = null
@@ -162,6 +240,73 @@ function readWeights (path = 'weights.bin') {
     reference = new Float32Array(Uint8Array.from(r).buffer)
   }
   return { header: { ...header, reference }, weights }
+}
+
+function writeWeights (path, header, weights, group = 128) {
+  if (!fs) throw new Error('writeWeights is only available in Node.js')
+  const tensors = []
+  const chunks = []
+  let dataOffset = 0
+  const append = chunk => {
+    chunks.push(chunk)
+    const offset = dataOffset
+    dataOffset += chunk.length
+    return offset
+  }
+  for (const [name, value] of Object.entries(weights)) {
+    const shape = [...value.shape]
+    if (isPackedW4Tensor(name, shape)) {
+      const packed = packW4(name, value, group)
+      const offset = append(packed.packed)
+      const scalesOffset = append(packed.scales)
+      tensors.push({
+        name,
+        shape,
+        encoding: 'w4',
+        offset,
+        packed_bytes: packed.packed.length,
+        scales_offset: scalesOffset,
+        scales_nbytes: packed.scales.length,
+        group_size: group
+      })
+    } else {
+      const host = value.ref.dataSync()
+      const raw = Buffer.from(host.buffer, host.byteOffset, host.byteLength)
+      const offset = append(raw)
+      tensors.push({ name, shape, encoding: 'f32', offset, nbytes: raw.length })
+    }
+  }
+  let reference = null
+  if (header.reference) {
+    const ref = Buffer.from(
+      header.reference.buffer,
+      header.reference.byteOffset,
+      header.reference.byteLength
+    )
+    const offset = append(ref)
+    reference = { offset, nbytes: ref.length, shape: [ref.length / 4] }
+  }
+  const outHeader = {
+    ...header,
+    format: 'needle-timemachine.jaxjs-weights/v2',
+    quantization: { scheme: 'symmetric-per-group', bits: 4, group_size: group },
+    tensors,
+    reference
+  }
+  delete outHeader.config?.reference
+  const headerBytes = Buffer.from(JSON.stringify(outHeader), 'utf8')
+  const length = Buffer.alloc(4)
+  length.writeUInt32LE(headerBytes.length)
+  const output = Buffer.concat([
+    Buffer.from(MAGIC, 'ascii'),
+    length,
+    headerBytes,
+    ...chunks
+  ])
+  fs.writeFileSync(path, output)
+  console.log(`weights:    ${path}`)
+  console.log(`tensors:    ${tensors.length}`)
+  console.log(`bytes:      ${output.length}`)
 }
 
 function halfToFloat (h) {
@@ -1052,8 +1197,18 @@ async function main () {
     return
   }
   console.log(HELP.trimEnd())
+  const compareGroupArg = args.find(x => x.startsWith('--quant-group='))
+  const compareGroup = compareGroupArg ? Number(compareGroupArg.slice('--quant-group='.length)) : 128
+  if (!Number.isInteger(compareGroup) || compareGroup <= 0)
+    throw new Error('--quant-group must be a positive integer')
   const cactAt = args.indexOf('--cact'),
-    cactEq = args.find(x => x.startsWith('--cact='))
+    cactEq = args.find(x => x.startsWith('--cact=')),
+    weightsAt = args.indexOf('--weights'),
+    weightsEq = args.find(x => x.startsWith('--weights=')),
+    w4At = args.indexOf('--w4'),
+    w4Eq = args.find(x => x.startsWith('--w4=')),
+    dumpAt = args.indexOf('--dump-weights'),
+    dumpEq = args.find(x => x.startsWith('--dump-weights='))
   if (cactAt >= 0 && cactEq)
     throw new Error('use either --cact=<path> or --cact <path>')
   const cactPath = cactEq
@@ -1061,7 +1216,29 @@ async function main () {
     : cactAt >= 0
     ? args[cactAt + 1]
     : null
-  if (cactAt >= 0 && !cactPath) throw new Error('--cact requires a path')
+  const weightsPath = weightsEq
+    ? weightsEq.slice('--weights='.length)
+    : weightsAt >= 0
+    ? args[weightsAt + 1]
+    : null
+  const dumpPath = dumpEq
+    ? dumpEq.slice('--dump-weights='.length)
+    : dumpAt >= 0
+    ? args[dumpAt + 1]
+    : null
+  const w4Path = w4Eq
+    ? w4Eq.slice('--w4='.length)
+    : w4At >= 0
+    ? args[w4At + 1]
+    : null
+  const requireOptionPath = (at, path, name) => {
+    if (at >= 0 && (!path || path.startsWith('-')))
+      throw new Error(`${name} requires a path`)
+  }
+  requireOptionPath(cactAt, cactPath, '--cact')
+  requireOptionPath(weightsAt, weightsPath, '--weights')
+  requireOptionPath(w4At, w4Path, '--w4')
+  requireOptionPath(dumpAt, dumpPath, '--dump-weights')
   if (
     cactAt >= 0 &&
     cactAt + 1 < args.length &&
@@ -1069,17 +1246,30 @@ async function main () {
   )
     throw new Error('--cact requires a path')
   const positional = args.find(
-    (x, i) => !x.startsWith('-') && !(i > 0 && args[i - 1] === '--cact')
+    (x, i) =>
+      !x.startsWith('-') &&
+      !(i > 0 && ['--cact', '--weights', '--w4', '--dump-weights'].includes(args[i - 1]))
   )
+  const inputOptions = [cactPath, weightsPath, w4Path].filter(Boolean)
+  if (inputOptions.length > 1)
+    throw new Error('use only one of --cact, --weights, or --w4')
+  if (dumpPath && (cactPath || w4Path))
+    throw new Error('--dump-weights requires float weights as input')
+  const inputPath = w4Path || weightsPath || positional || 'weights.bin'
   const loaded = cactPath
       ? readCact(cactPath)
-      : readWeights(positional || 'weights.bin'),
+      : readWeights(inputPath),
     header = loaded.header,
     weights = loaded.weights,
-     weightSnapshot = snapshotWeights(weights),
     cfg = normalizeConfig(header.config ?? header),
     tokensArg = args.find(x => x.startsWith('--tokens=')),
     prefillArg = args.find(x => x.startsWith('--prefill-file='))
+  if (w4Path && header.quantization?.bits !== 4)
+    throw new Error(`--w4 requires packed W4 weights: ${w4Path}`)
+  if (dumpPath) {
+    writeWeights(dumpPath, header, weights, compareGroup)
+    return
+  }
   if (tokensArg && prefillArg)
     throw new Error('use either --tokens or --prefill-file, not both')
   const tokens = prefillArg
@@ -1090,10 +1280,7 @@ async function main () {
   const backend = (await init('wasm')).includes('wasm') ? 'wasm' : 'cpu'
   defaultDevice(backend)
   const compareQuant = args.includes('--compare-quant')
-  const compareGroupArg = args.find(x => x.startsWith('--quant-group='))
-  const compareGroup = compareGroupArg ? Number(compareGroupArg.slice('--quant-group='.length)) : 128
-  if (!Number.isInteger(compareGroup) || compareGroup <= 0)
-    throw new Error('--quant-group must be a positive integer')
+  const weightSnapshot = compareQuant ? snapshotWeights(weights) : null
   const tokenData = Int32Array.from(tokens)
   const makeTokenArray = () => np
     .array(tokenData, { dtype: np.int32 })
@@ -1161,7 +1348,7 @@ async function main () {
   }
   const top = topLogits(out, tokens, cfg, tokenMetadata)
   console.log(`backend:    ${backend}`)
-  console.log(`weights:    ${cactPath ? 'cact' : 'weights.bin'}`)
+  console.log(`weights:    ${cactPath || w4Path || inputPath}`)
   console.log(`tokens:     ${tokens.length}`)
   console.log(`logits:     ${JSON.stringify(logits.shape)}`)
   console.log(`top-5:      ${JSON.stringify(top)}`)
