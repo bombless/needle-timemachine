@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Needle Time Machine — browser inference</title>
+  <style>
+    :root { color-scheme: dark; font-family: ui-monospace,SFMono-Regular,Menlo,monospace; }
+    body { margin:0; background:#0b0d10; color:#e7eaf0; }
+    main { max-width:1000px; margin:0 auto; padding:32px 20px 64px; }
+    h1 { margin:0 0 8px; font-size:24px; }
+    .muted { color:#8b93a1; }
+    .card { background:#11151b; border:1px solid #252c36; border-radius:12px; padding:18px; margin-top:16px; }
+    button { border:1px solid #394352; background:#1a2230; color:#fff; border-radius:8px; padding:9px 14px; cursor:pointer; }
+    button:disabled { opacity:.45; cursor:not-allowed; }
+    .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    .status { margin-top:10px; min-height:1.4em; }
+    #output { white-space:pre-wrap; line-height:1.65; font-family:inherit; }
+    #tokens { color:#aeb8c8; word-break:break-word; }
+    progress { width:100%; height:12px; }
+    code { color:#d5dcff; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Needle Time Machine / browser inference</h1>
+  <div class="muted">从仓库预设的 <code>prefill.json</code> 开始，使用 <code>w4-packed.bin</code> 在浏览器端继续 greedy decode，直到 EOS 或达到上限。</div>
+
+  <section class="card">
+    <div class="row">
+      <button id="run">加载模型并开始推理</button>
+      <label>max new tokens <input id="maxTokens" type="number" min="1" max="1024" value="128" style="width:80px"></label>
+    </div>
+    <div class="status" id="status">等待开始。</div>
+    <progress id="progress" value="0" max="1"></progress>
+  </section>
+
+  <section class="card">
+    <div class="muted">Prefill / generated tokens</div>
+    <div id="tokens"></div>
+  </section>
+
+  <section class="card">
+    <div class="muted">Decoded output</div>
+    <div id="output"></div>
+  </section>
+</main>
+<script type="module" src="./app.js"></script>
+</body>
+</html>
