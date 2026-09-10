@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Needle Time Machine</title>
+  <style>
+    :root { color-scheme: dark; font: 15px system-ui,sans-serif; }
+    body { margin:0; background:#0b0d10; color:#e7eaf0; }
+    main { max-width:980px; margin:auto; padding:32px 20px 64px; }
+    h1 { margin:0 0 8px; font-size:25px; }
+    .muted { color:#929baa; }
+    .card { background:#11151b; border:1px solid #252c36; border-radius:8px; padding:18px; margin-top:16px; }
+    .row { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+    button { border:1px solid #4b596d; border-radius:6px; padding:9px 14px; background:#1b2635; color:#fff; cursor:pointer; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    input { background:#0b0d10; color:inherit; border:1px solid #4b596d; border-radius:4px; padding:7px; }
+    progress { width:100%; height:12px; margin-top:14px; }
+    #tokens { color:#bac4d4; word-break:break-word; line-height:1.7; }
+    #output { white-space:pre-wrap; min-height:5em; line-height:1.7; }
+    code { color:#d5dcff; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Needle Time Machine</h1>
+  <div class="muted">浏览器端加载 W4 量化权重，从预设 prompt 开始 greedy decode。Prefill 后逐 token 使用 KV cache 状态。</div>
+  <section class="card">
+    <div class="row">
+      <button id="run">加载模型并采样轨迹</button>
+      <label>最大新 token <input id="maxTokens" type="number" min="1" max="1024" value="64" style="width:70px"></label>
+    </div>
+    <div id="status" class="muted" style="margin-top:12px">等待开始。</div>
+    <progress id="progress" value="0" max="1"></progress>
+  </section>
+  <section class="card"><div class="muted">采样轨迹</div><div id="tokens"></div></section>
+  <section class="card"><div class="muted">解码文本</div><div id="output"></div></section>
+</main>
+<script type="module" src="./app.js"></script>
+</body>
+</html>
