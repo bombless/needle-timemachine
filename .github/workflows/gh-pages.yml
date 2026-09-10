@@ -1,0 +1,52 @@
+name: Deploy W4 browser demo
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: github-pages-w4
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install browser runtime dependency
+        run: npm ci
+
+      - name: Smoke test the checked-in W4 model
+        run: node forward.js --w4=w4-packed.bin --prefill-file=prefill.json
+
+      - name: Assemble static site
+        run: |
+          rm -rf public
+          mkdir -p public
+          cp web/index.html public/index.html
+          cp web/app.js public/app.js
+          cp forward.js public/forward.js
+          cp prefill.json public/prefill.json
+          cp w4-packed.bin public/w4-packed.bin
+          touch public/.nojekyll
+
+      - name: Deploy to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: ./public
+          force_orphan: true
