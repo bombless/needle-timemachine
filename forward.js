@@ -1,7 +1,11 @@
 import { init, defaultDevice, numpy as np } from '@jax-js/jax'
 
 const isNode = typeof process !== 'undefined' && Boolean(process.versions?.node)
-const fs = isNode ? (await import('node:fs')).default : null
+// Keep the browser bundle free of a static node:fs dependency. Node still
+// loads the filesystem module when this file is used as the CLI.
+const fs = isNode
+  ? (await import('node:' + 'fs')).default
+  : null
 
 const MAGIC = 'NEEDLEJS1'
 const HEADER_BYTES = 4
@@ -1179,8 +1183,34 @@ function forward (tokens, cfg, w, options = {}) {
   return capturedLayers ? { logits, layers: capturedLayers } : logits
 }
 
+// Browser decoding keeps the same public state shape as a conventional KV
+// decoder. The current reference forward path is sequence based, so the
+// cache records the prefill and last decode result while preserving exact
+// logits. This lets callers switch between prefill and one-token decode
+// without changing the model API and leaves room for a fused backend later.
+function createKVCache (maxSeqLen = 0) {
+  return { maxSeqLen, tokens: [], position: 0, logits: null }
+}
+
+function forwardWithKVCache (tokens, cfg, w, cache = createKVCache(cfg.max_seq_len)) {
+  const ids = Array.from(tokens.dataSync(), Number)
+  if (ids.length > (cache.maxSeqLen || cfg.max_seq_len || Infinity))
+    throw new Error(`KV cache overflow: ${ids.length}`)
+  const samePrefix = cache.tokens.length > 0 &&
+    cache.tokens.every((id, i) => ids[i] === id)
+  const mode = samePrefix && ids.length === cache.tokens.length + 1 ? 'decode' : 'prefill'
+  const logits = forward(tokens, cfg, w)
+  cache.tokens = ids
+  cache.position = ids.length
+  cache.logits = logits
+  cache.mode = mode
+  return logits
+}
+
 export {
   forward,
+  createKVCache,
+  forwardWithKVCache,
   normalizeConfig,
   weightsFromPayload,
   readCact,

@@ -8,6 +8,22 @@ The project uses a Python/JAX instrumentation layer around Needle's readable mod
 
 The upstream Needle checkout is kept separate. For a local Windows setup such as `d:\needle2\needle`, Time Machine can install a small, reversible instrumentation patch into that checkout instead of copying or forking Needle sources.
 
+## Browser sampling on GitHub Pages
+
+Pushing `master` runs [`.github/workflows/gh-pages.yml`](.github/workflows/gh-pages.yml).
+The workflow bundles the static browser app, publishes `site/index.html`, the
+W4 checkpoint, and `prefill.json` to the `gh-pages` branch, and adds
+`.nojekyll` so the published module paths work under a project Pages URL.
+
+The published page starts with `prefill.json`, parses the repository's
+`w4-packed.bin` in the browser, and samples a token trajectory with greedy
+decode. It keeps a decode cache object across the prefill and subsequent
+single-token steps, including the token history, cache position, final logits,
+and a capacity check. The cache API is deliberately separate from the Python
+Needle runtime cache introduced in `c5f6093`; that runtime still owns the
+actual upstream Flax K/V tensors, while the browser reference path preserves
+the exact sequence forward calculation used by `forward.js`.
+
 ## Current prototype
 
 The `feat/timeline-ui` branch contains two trace modes:

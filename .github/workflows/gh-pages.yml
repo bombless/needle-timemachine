@@ -1,0 +1,43 @@
+name: Build and publish GitHub Pages
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gh-pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Bundle browser app
+        run: npx --yes esbuild@0.25.9 site/app.js --bundle --platform=browser --format=esm --outfile=public/app.js
+      - name: Assemble static site
+        run: |
+          cp site/index.html public/index.html
+          cp prefill.json public/prefill.json
+          cp w4-packed.bin public/w4-packed.bin
+          touch public/.nojekyll
+      - name: Publish gh-pages branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: public
+          force_orphan: true
+          commit_message: "deploy: ${{ github.sha }}"
