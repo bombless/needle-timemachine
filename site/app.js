@@ -55,6 +55,7 @@ function decode (tokens, metadata) { return tokens.map(id => tokenText(id, metad
 async function load (url) { const response = await fetch(url, { cache: 'force-cache' }); if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`); return response.arrayBuffer() }
 
 $('run').onclick = async () => {
+  const startedAt = performance.now()
   $('run').disabled = true; $('progress').value = 0; $('tokens').textContent = ''; $('output').textContent = ''
   try {
     status('下载 W4 权重和 prompt…')
@@ -72,6 +73,7 @@ $('run').onclick = async () => {
     const tokens = [...prompt]
     const eos = new Set([5, cfg.eos_token_id, header.eos_token_id].filter(Number.isInteger))
     let generated = 0
+    let stoppedByEos = false
     for (let step = 0; step < maxNew; step++) {
       const input = np.array(Int32Array.from(tokens), { dtype: np.int32 }).reshape([1, tokens.length])
       status(`${backend} · ${cache.position ? 'decode' : 'prefill'} · ${tokens.length} tokens · KV position ${cache.position}`)
@@ -80,7 +82,7 @@ $('run').onclick = async () => {
       await new Promise(requestAnimationFrame)
       const logits = forwardWithKVCache(input, cfg, weights, cache)
       const next = greedy(logits.dataSync(), cfg.vocab_size)
-      if (eos.has(next)) { status(`遇到 EOS ${next}，轨迹结束；生成 ${tokens.length - prompt.length} tokens。`); break }
+      if (eos.has(next)) { stoppedByEos = true; break }
       tokens.push(next)
       generated++
       $('output').textContent = decode(tokens.slice(prompt.length), metadata)
@@ -88,6 +90,9 @@ $('run').onclick = async () => {
     $('progress').value = 1
     $('tokens').textContent = decode(tokens, metadata)
     if (!$('output').textContent) $('output').textContent = decode(tokens.slice(prompt.length), metadata)
-    if (generated === maxNew) status(`完成：${generated} 个新 token，KV cache position=${cache.position}。`)
+    const elapsedSeconds = (performance.now() - startedAt) / 1000
+    const tokensPerSecond = generated / Math.max(elapsedSeconds, 0.001)
+    const reason = stoppedByEos ? '遇到 EOS，轨迹结束' : '达到最大生成 token 数'
+    status(`${reason}：生成 ${generated} 个新 token，耗时 ${elapsedSeconds.toFixed(2)} 秒，${tokensPerSecond.toFixed(2)} token/s，KV cache position=${cache.position}。`)
   } catch (error) { console.error(error); status(`错误：${error?.stack || error}`) } finally { $('run').disabled = false }
 }
