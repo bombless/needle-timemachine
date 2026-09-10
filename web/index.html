@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Needle Time Machine · W4 Sampler</title>
+  <style>
+    :root{font-family:system-ui,sans-serif;color:#172033;background:#f5f7fb}body{margin:0}.app{max-width:1100px;margin:auto;padding:24px}.card{background:#fff;border:1px solid #dde2eb;border-radius:12px;padding:16px;margin-top:16px;box-shadow:0 1px 2px #0001}.bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}button,input,select{font:inherit}button{padding:8px 12px;border:1px solid #cbd2df;border-radius:8px;background:#fff;cursor:pointer}button:hover{background:#eef2f7}button:disabled{opacity:.55;cursor:default}.muted{color:#697586}.mono{font-family:ui-monospace,monospace}.status{margin-top:10px;padding:10px;border-radius:8px;background:#f7f8fa;white-space:pre-wrap}.ok{background:#e9f7ef}.bad{background:#fff0f0}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}textarea{width:100%;box-sizing:border-box;min-height:120px;padding:10px;border:1px solid #cbd2df;border-radius:8px}.tokens{display:flex;flex-wrap:wrap;gap:6px}.token{padding:5px 8px;background:#eef2f7;border-radius:6px}.traj{max-height:460px;overflow:auto}.row{display:grid;grid-template-columns:44px 80px 1fr 100px;gap:8px;padding:7px 0;border-bottom:1px solid #e5e9f0}.probbar{height:7px;background:#e5e9f0;border-radius:4px;overflow:hidden}.fill{height:100%;background:#3d63dd}@media(max-width:760px){.grid{grid-template-columns:1fr}.row{grid-template-columns:36px 65px 1fr 80px}}
+  </style>
+  <script type="importmap">{"imports":{"@jax-js/jax":"https://esm.sh/@jax-js/jax@0.1.23"}}</script>
+</head>
+<body>
+<main class="app">
+  <div class="bar"><h1 style="margin:0">Needle Time Machine</h1><span id="summary" class="muted">加载 W4…</span></div>
+  <section class="card">
+    <h2>采样</h2>
+    <textarea id="prompt" placeholder="prefill.json 的 token ids，或直接输入 token ids，例如 1,2,3,4"></textarea>
+    <div class="bar" style="margin-top:10px">
+      <label>新 token 数 <input id="steps" type="number" min="1" max="128" value="24" style="width:80px"></label>
+      <label>temperature <input id="temperature" type="number" min="0" max="3" step="0.05" value="0.8" style="width:80px"></label>
+      <label>top-p <input id="topP" type="number" min="0.01" max="1" step="0.01" value="0.95" style="width:80px"></label>
+      <label><input id="kv" type="checkbox" checked> KV cache</label>
+      <button id="sample">▶ Sample trajectory</button>
+      <button id="reset">Reset</button>
+    </div>
+    <div id="status" class="status">正在加载 W4 权重…</div>
+  </section>
+  <div class="grid">
+    <section class="card"><h2>Prompt / trajectory</h2><div id="tokens" class="tokens"></div></section>
+    <section class="card"><h2>当前 token top-k</h2><div id="topk" class="traj muted">—</div></section>
+  </div>
+  <section class="card"><h2>Trajectory</h2><div id="trajectory" class="traj muted">—</div></section>
+  <section class="card"><h2>Implementation</h2><div class="muted">浏览器直接载入仓库中的 <span class="mono">w4-packed.bin</span>，使用与 <span class="mono">forward.js</span> 相同的 W4 解包和 JAX.js forward。KV cache 开关维护 autoregressive session 的缓存状态；当前仓库的 JS forward 本身仍是 full-prefix forward，因此开启后保证状态复用/重复请求一致，但不会声称有 Python 版逐层 K/V kernel cache 的性能收益。</div></section>
+</main>
+<script type="module" src="./app.js"></script>
+</body>
+</html>
