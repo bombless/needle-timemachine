@@ -1042,6 +1042,13 @@ function vectorMetrics (reference, candidate) {
 }
 
 function forward (tokens, cfg, w, options = {}) {
+  // Model weights outlive a single sampling step. jax-js moves every array
+  // argument by default, whereas this reference implementation uses the same
+  // weight tensors many times within a pass and across decode passes. Give
+  // this invocation its own retained reference to each persistent tensor.
+  w = Object.fromEntries(
+    Object.entries(w).map(([name, value]) => [name, value.ref])
+  )
   const B = tokens.shape[0],
     T = tokens.shape[1],
     C = cfg.d_model,
@@ -1207,6 +1214,7 @@ function forwardWithKVCache (tokens, cfg, w, cache = createKVCache(cfg.max_seq_l
   cache.position = ids.length
   // The caller consumes the returned logits to sample the next token, so the
   // cache owns a separate reference for inspection/debugging purposes.
+  cache.logits?.dispose()
   cache.logits = logits.ref
   cache.mode = mode
   return logits
