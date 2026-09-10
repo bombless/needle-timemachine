@@ -26,7 +26,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: Bundle browser app
-        run: npx --yes esbuild@0.25.9 site/app.js --bundle --platform=browser --format=esm --outfile=public/app.js
+        # forward.js also provides the Node CLI. Its conditional node:fs import
+        # must stay external so esbuild can emit the browser-only branch.
+        run: npx --yes esbuild@0.25.9 site/app.js --bundle --platform=browser --format=esm --external:node:fs --outfile=public/app.js
       - name: Assemble static site
         run: |
           cp site/index.html public/index.html
