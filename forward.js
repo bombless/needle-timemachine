@@ -1193,7 +1193,10 @@ function createKVCache (maxSeqLen = 0) {
 }
 
 function forwardWithKVCache (tokens, cfg, w, cache = createKVCache(cfg.max_seq_len)) {
-  const ids = Array.from(tokens.dataSync(), Number)
+  // dataSync can realize and consume its argument on jax-js backends. Keep a
+  // reference because the same token array is passed to forward immediately
+  // afterwards.
+  const ids = Array.from(tokens.ref.dataSync(), Number)
   if (ids.length > (cache.maxSeqLen || cfg.max_seq_len || Infinity))
     throw new Error(`KV cache overflow: ${ids.length}`)
   const samePrefix = cache.tokens.length > 0 &&
@@ -1202,7 +1205,9 @@ function forwardWithKVCache (tokens, cfg, w, cache = createKVCache(cfg.max_seq_l
   const logits = forward(tokens, cfg, w)
   cache.tokens = ids
   cache.position = ids.length
-  cache.logits = logits
+  // The caller consumes the returned logits to sample the next token, so the
+  // cache owns a separate reference for inspection/debugging purposes.
+  cache.logits = logits.ref
   cache.mode = mode
   return logits
 }
