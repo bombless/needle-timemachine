@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
 
 <head>
@@ -6,186 +6,62 @@
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <title>Needle Time Machine</title>
     <style>
-        :root {
-            font-family: system-ui, sans-serif;
-            color: #172033;
-            background: #f5f7fb
-        }
-
-        body {
-            margin: 0
-        }
-
-        .app {
-            max-width: 1240px;
-            margin: auto;
-            padding: 24px
-        }
-
-        .bar {
-            display: flex;
-            gap: 10px;
-            align-items: center;
-            flex-wrap: wrap
-        }
-
-        .card {
-            background: #fff;
-            border: 1px solid #dde2eb;
-            border-radius: 12px;
-            padding: 16px;
-            margin-top: 16px;
-            box-shadow: 0 1px 2px #0001
-        }
-
-        button {
-            font: inherit;
-            padding: 8px 12px;
-            border: 1px solid #cbd2df;
-            border-radius: 8px;
-            background: #fff;
-            cursor: pointer
-        }
-
-        button:hover {
-            background: #eef2f7
-        }
-
-        .muted {
-            color: #697586
-        }
-
-        .grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 16px
-        }
-
-        .timeline {
-            position: relative;
-            height: 78px;
-            overflow-x: auto;
-            padding: 12px 8px
-        }
-
-        .track {
-            position: absolute;
-            left: 8px;
-            right: 8px;
-            top: 43px;
-            height: 3px;
-            background: #ccd3df
-        }
-
-        .dot {
-            position: absolute;
-            top: 36px;
-            width: 14px;
-            height: 14px;
-            border-radius: 50%;
-            border: 2px solid #fff;
-            background: #697586;
-            box-shadow: 0 0 0 1px #aeb7c5;
-            transform: translateX(-50%)
-        }
-
-        .dot.layer {
-            background: #3d63dd
-        }
-
-        .dot.current {
-            background: #e05a33;
-            transform: translateX(-50%) scale(1.25)
-        }
-
-        pre {
-            white-space: pre-wrap;
-            overflow: auto;
-            max-height: 320px;
-            background: #f7f8fa;
-            padding: 12px;
-            border-radius: 8px
-        }
-
-        .kv {
-            display: grid;
-            grid-template-columns: 120px 1fr;
-            gap: 7px;
-            font-family: ui-monospace, monospace;
-            font-size: 13px
-        }
-
-        .layer-box {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 12px
-        }
-
-        .status {
-            margin-top: 10px;
-            padding: 10px;
-            border-radius: 8px;
-            background: #f7f8fa
-        }
-
-        .ok {
-            background: #e9f7ef
-        }
-
-        .bad {
-            background: #fff0f0
-        }
-
-        .warn {
-            background: #fff8df
-        }
-
-        .token-table {
-            width: 100%;
-            border-collapse: collapse
-        }
-
-        .token-table td,
-        .token-table th {
-            padding: 7px;
-            border-bottom: 1px solid #e5e9f0;
-            text-align: left
-        }
-
-        .mono {
-            font-family: ui-monospace, monospace
-        }
-
-        .probability-table {
-            width: 100%;
-            border-collapse: collapse
-        }
-
-        .probability-table td,
-        .probability-table th {
-            padding: 8px;
-            border-bottom: 1px solid #e5e9f0;
-            text-align: left
-        }
-
-        .probbar {
-            height: 8px;
-            background: #e5e9f0;
-            border-radius: 4px;
-            overflow: hidden
-        }
-
-        .fill {
-            height: 100%;
-            background: #3d63dd
-        }
-
-        @media(max-width:760px) {
-            .grid {
-                grid-template-columns: 1fr
-            }
-        }
+        :root { font-family: system-ui, sans-serif; color: #172033; background: #f5f7fb }
+        body { margin: 0 }
+        .app { max-width: 1440px; margin: auto; padding: 24px }
+        .bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap }
+        .card { background: #fff; border: 1px solid #dde2eb; border-radius: 12px; padding: 16px; margin-top: 16px; box-shadow: 0 1px 2px #0001 }
+        button, input, select { font: inherit }
+        button { padding: 8px 12px; border: 1px solid #cbd2df; border-radius: 8px; background: #fff; cursor: pointer }
+        button:hover { background: #eef2f7 }
+        button:disabled { cursor: not-allowed; opacity: .55 }
+        .muted { color: #697586 }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px }
+        .timeline { position: relative; height: 78px; overflow-x: auto; padding: 12px 8px }
+        .track { position: absolute; left: 8px; right: 8px; top: 43px; height: 3px; background: #ccd3df }
+        .dot { position: absolute; top: 36px; width: 14px; height: 14px; padding: 0; border-radius: 50%; border: 2px solid #fff; background: #697586; box-shadow: 0 0 0 1px #aeb7c5; transform: translateX(-50%) }
+        .dot.layer { background: #3d63dd }
+        .dot.current { background: #e05a33; transform: translateX(-50%) scale(1.25) }
+        pre { white-space: pre-wrap; overflow: auto; max-height: 320px; background: #f7f8fa; padding: 12px; border-radius: 8px }
+        .kv { display: grid; grid-template-columns: 120px 1fr; gap: 7px; font-family: ui-monospace, monospace; font-size: 13px }
+        .layer-box { display: flex; align-items: center; justify-content: space-between; gap: 12px }
+        .status { margin-top: 10px; padding: 10px; border-radius: 8px; background: #f7f8fa }
+        .ok { background: #e9f7ef } .bad { background: #fff0f0 } .warn { background: #fff8df }
+        .token-table, .probability-table { width: 100%; border-collapse: collapse }
+        .token-table td, .token-table th, .probability-table td, .probability-table th { padding: 8px; border-bottom: 1px solid #e5e9f0; text-align: left }
+        .mono { font-family: ui-monospace, monospace }
+        .probbar { height: 8px; background: #e5e9f0; border-radius: 4px; overflow: hidden }
+        .fill { height: 100%; background: #3d63dd }
+        .hierarchy-layout { display: grid; grid-template-columns: minmax(270px, 0.8fr) minmax(0, 1.7fr); gap: 18px; margin-top: 14px }
+        .tree-panel { min-width: 0; border: 1px solid #e5e9f0; border-radius: 10px; padding: 12px; background: #fbfcfe }
+        .tree-toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px }
+        .tree-toolbar input, .tree-toolbar select { min-width: 0; width: 100%; padding: 8px; border: 1px solid #cbd2df; border-radius: 8px; background: white }
+        .tree { max-height: 520px; overflow: auto; font-size: 14px }
+        .tree ul { list-style: none; padding-left: 18px; margin: 3px 0 }
+        .tree > ul { padding-left: 0; margin-top: 0 }
+        .tree-node { display: flex; align-items: center; gap: 5px; min-width: 0; margin: 2px 0 }
+        .tree-toggle { width: 24px; padding: 2px; flex: 0 0 24px; border: 0; background: transparent; color: #697586 }
+        .tree-toggle:hover { background: #edf1f7 }
+        .tree-label { display: flex; align-items: center; gap: 7px; min-width: 0; width: 100%; text-align: left; padding: 6px 8px; border-color: transparent; background: transparent }
+        .tree-label.selected { background: #e9efff; border-color: #b9c8ff; color: #173caa }
+        .tree-label .node-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 }
+        .node-count { font-size: 11px; color: #697586; white-space: nowrap }
+        .node-icon { width: 18px; text-align: center; color: #697586; flex: 0 0 18px }
+        .node-layer .node-icon { color: #3d63dd } .node-event .node-icon { color: #b65b2b }
+        .tree-empty { color: #697586; padding: 14px 4px; font-size: 13px }
+        .browser-main { min-width: 0 }
+        .browser-summary { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px }
+        .pill { background: #f0f3f8; border-radius: 999px; padding: 4px 9px; font-size: 12px; color: #536174 }
+        .event-list { max-height: 460px; overflow: auto; border: 1px solid #e5e9f0; border-radius: 8px }
+        .event-row { display: grid; grid-template-columns: 66px minmax(0,1fr) auto; align-items: center; gap: 10px; width: 100%; padding: 10px; border: 0; border-bottom: 1px solid #edf0f5; border-radius: 0; text-align: left }
+        .event-row:last-child { border-bottom: 0 }
+        .event-row.active { background: #fff2e9; box-shadow: inset 3px 0 #e05a33 }
+        .event-step { color: #697586; font: 12px ui-monospace, monospace }
+        .event-op { overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+        .event-sub { color: #697586; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+        .event-badge { color: #697586; font-size: 11px; border: 1px solid #e0e5ed; padding: 2px 6px; border-radius: 999px; white-space: nowrap }
+        @media(max-width:900px) { .hierarchy-layout { grid-template-columns: 1fr } .tree { max-height: 340px } }
+        @media(max-width:760px) { .grid { grid-template-columns: 1fr } .app { padding: 12px } }
     </style>
 </head>
 
@@ -195,62 +71,63 @@
             <h1 style="margin:0">Needle Time Machine</h1><span id="summary" class="muted"></span>
         </div>
         <div class="card">
-            <div class="bar"><button id="first">|&lt;</button><button id="prev">&lt;</button><button id="play">▶
-                    Play</button><button id="next">&gt;</button><button id="last">&gt;|</button><label>速度 <input
-                        id="speed" type="range" min="0.25" max="4" step="0.25" value="1"><span
-                        id="speedText">1×</span></label></div><input id="slider" type="range" min="0" max="0" value="0"
-                style="width:100%">
-            <div class="timeline">
-                <div class="track" id="track"></div>
-            </div>
+            <div class="bar"><button id="first">|&lt;</button><button id="prev">&lt;</button><button id="play">▶ Play</button><button id="next">&gt;</button><button id="last">&gt;|</button><label>速度 <input id="speed" type="range" min="0.25" max="4" step="0.25" value="1"><span id="speedText">1×</span></label></div>
+            <input id="slider" type="range" min="0" max="0" value="0" style="width:100%">
+            <div class="timeline"><div class="track" id="track"></div></div>
         </div>
+
+        <section class="card" id="hierarchyBrowser">
+            <div class="layer-box">
+                <div>
+                    <h2 style="margin:0">模型结构与操作层级</h2>
+                    <div class="muted">按 trace 中实际记录的 layer / operation 组织。选择操作可同步定位时间线和事件详情。</div>
+                </div>
+                <div class="bar"><button id="treeExpand">展开全部</button><button id="treeCollapse">折叠全部</button></div>
+            </div>
+            <div class="hierarchy-layout">
+                <aside class="tree-panel">
+                    <div class="tree-toolbar">
+                        <input id="treeSearch" type="search" placeholder="搜索层、操作或事件名称…" aria-label="搜索层、操作或事件名称">
+                        <select id="treeFilter" aria-label="按事件类型筛选">
+                            <option value="all">全部事件类型</option>
+                            <option value="layer">层级边界</option>
+                            <option value="runtime">运行时操作</option>
+                            <option value="tensor">含 Tensor 元数据</option>
+                        </select>
+                    </div>
+                    <div id="hierarchyTree" class="tree" role="tree" aria-label="模型层级树"><div class="tree-empty">正在读取 trace…</div></div>
+                </aside>
+                <div class="browser-main">
+                    <div id="browserSummary" class="browser-summary"></div>
+                    <div id="browserHeading"><h3 style="margin:0 0 8px">所有事件</h3></div>
+                    <div id="eventList" class="event-list" aria-live="polite"></div>
+                </div>
+            </div>
+        </section>
+
         <div class="grid">
             <section class="card">
                 <h2 id="title">No event</h2>
                 <div id="details" class="kv"></div>
             </section>
             <section class="card">
-                <h2>Tensor metadata</h2>
-                <pre id="tensors">{}</pre>
-                <h2>Event metadata</h2>
-                <pre id="metadata">{}</pre>
+                <h2>Tensor metadata</h2><pre id="tensors">{}</pre>
+                <h2>Event metadata</h2><pre id="metadata">{}</pre>
             </section>
         </div>
         <section class="card">
-            <div class="layer-box">
-                <div>
-                    <h2 id="layerTitle" style="margin:0">Layer verification</h2>
-                    <div class="muted">使用 jax-js 在浏览器重新构造输入/输出数组并计算指纹，同时检查相邻层的数值连续性。</div>
-                </div><button id="verify" disabled>JAX.js 验算这一层</button>
-            </div>
+            <div class="layer-box"><div><h2 id="layerTitle" style="margin:0">Layer verification</h2><div class="muted">使用 jax-js 在浏览器重新构造输入/输出数组并计算指纹，同时检查相邻层的数值连续性。</div></div><button id="verify" disabled>JAX.js 验算这一层</button></div>
             <div id="verifyStatus" class="status">选择一个 layer 事件后可验算。</div>
         </section>
         <section class="card">
-            <div class="layer-box">
-                <div>
-                    <h2 style="margin:0">forward.js 完整前向校验</h2>
-                    <div class="muted">载入当前 checkpoint 的全部参数，在浏览器中执行与 Node CLI 相同的 forward.js 前向传播。</div>
-                </div><button id="verifyFull">载入权重并运行 forward.js</button>
-            </div>
+            <div class="layer-box"><div><h2 style="margin:0">forward.js 完整前向校验</h2><div class="muted">载入当前 checkpoint 的全部参数，在浏览器中执行与 Node CLI 相同的 forward.js 前向传播。</div></div><button id="verifyFull">载入权重并运行 forward.js</button></div>
             <div id="fullStatus" class="status">尚未载入权重。</div>
         </section>
-        <section class="card">
-            <h2>JAX.js logits（最终 token）</h2>
-            <div id="jaxLogits" class="muted">运行完整前向校验后显示。</div>
-        </section>
-        <section class="card">
-            <h2>Prompt tokens</h2>
-            <div id="promptTokens" class="muted">—</div>
-        </section>
-        <section class="card">
-            <h2>Final token probabilities</h2>
-            <div id="probabilities" class="muted">—</div>
-        </section>
+        <section class="card"><h2>JAX.js logits（最终 token）</h2><div id="jaxLogits" class="muted">运行完整前向校验后显示。</div></section>
+        <section class="card"><h2>Prompt tokens</h2><div id="promptTokens" class="muted">—</div></section>
+        <section class="card"><h2>Final token probabilities</h2><div id="probabilities" class="muted">—</div></section>
     </main>
-    <script type="importmap">
-        {"imports":{"@jax-js/jax":"https://esm.sh/@jax-js/jax@0.1.23"}}
-    </script>
+    <script type="importmap">{"imports":{"@jax-js/jax":"https://esm.sh/@jax-js/jax@0.1.23"}}</script>
     <script type="module" src="./ui.script.js"></script>
 </body>
-
 </html>
