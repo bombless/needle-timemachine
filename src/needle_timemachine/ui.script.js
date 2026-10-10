@@ -170,9 +170,8 @@ function renderEventList () {
   const query = $('treeSearch').value.trim().toLowerCase()
   const filter = $('treeFilter').value
   let node = findNode(hierarchy, selectedNodeKey) || hierarchy
-  if (node.type === 'event') node = findNode(hierarchy, node.key) || hierarchy
-  let indices = visibleEvents(node, query, filter)
-  if (node.type === 'event') indices = node.events.filter(i => eventMatchesFilter(trace.events[i], filter))
+  if (node.type === 'event') node = hierarchy.children.find(group => group.events.includes(node.eventIndex)) || hierarchy
+  const indices = visibleEvents(node, query, filter)
   $('browserHeading').innerHTML = `<h3 style="margin:0 0 8px">${esc(node.type === 'event' ? '选中事件' : node.label)}</h3>`
   $('browserSummary').innerHTML = ''
   const counts = [
